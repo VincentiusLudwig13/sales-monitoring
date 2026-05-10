@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -8,7 +8,15 @@ from datetime import datetime, timedelta
 import os
 import uuid
 import shutil
+import json
+from sqlalchemy.orm import Session
 from dotenv import load_dotenv
+
+from database import engine, get_db
+import models
+
+# Create tables
+models.Base.metadata.create_all(bind=engine)
 
 # Load environment variables
 load_dotenv()
@@ -29,19 +37,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Mock Data ---
-dummy_users = [
-    {"nik": "12345", "password": "password", "role": "salesman", "name": "Usman"},
-    {"nik": "admin", "password": "admin", "role": "admin", "name": "Admin User"}
-]
+# --- DB Seeding ---
+@app.on_event("startup")
+def seed_data():
+    db = next(get_db())
+    # Seed Admin User
+    admin = db.query(models.User).filter(models.User.nik == "admin").first()
+    if not admin:
+        db.add(models.User(nik="admin", password="admin", name="Admin User", role="admin"))
+    
+    # Seed Default Salesman
+    usman = db.query(models.User).filter(models.User.nik == "12345").first()
+    if not usman:
+        db.add(models.User(nik="12345", password="password", name="Usman", role="salesman"))
 
-dummy_stores = []
-visits_db = []
-dummy_products = [
-    {"id": "p1", "name": "Susu UHT 250ml", "quantity": 100, "price": 5000, "fresh_amount": 100, "retur_amount": 0},
-    {"id": "p2", "name": "Kopi Sachet", "quantity": 500, "price": 1500, "fresh_amount": 500, "retur_amount": 0},
-    {"id": "p3", "name": "Teh Kotak", "quantity": 200, "price": 3500, "fresh_amount": 200, "retur_amount": 0},
-]
+    # Seed Initial Products
+    if db.query(models.Product).count() == 0:
+        products = [
+            models.Product(id="p1", name="Susu UHT 250ml", quantity=100, price=5000, fresh_amount=100, retur_amount=0),
+            models.Product(id="p2", name="Kopi Sachet", quantity=500, price=1500, fresh_amount=500, retur_amount=0),
+            models.Product(id="p3", name="Teh Kotak", quantity=200, price=3500, fresh_amount=200, retur_amount=0),
+        ]
+        db.add_all(products)
+    
+    db.commit()
 
 # --- Pydantic Models ---
 class LoginRequest(BaseModel):
@@ -102,38 +121,42 @@ class StoreEdit(BaseModel):
 # --- Endpoints ---
 
 @app.post("/login", response_model=UserResponse)
-def login(request: LoginRequest):
-    user = next((u for u in dummy_users if u["nik"] == request.nik and u["password"] == request.password), None)
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.nik == request.nik, models.User.password == request.password).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid NIK or Password")
-    return {"nik": user["nik"], "name": user["name"], "role": user["role"]}
+    return {"nik": user.nik, "name": user.name, "role": user.role}
 
 @app.get("/users")
-def get_users():
-    return [{"nik": u["nik"], "name": u["name"], "role": u["role"]} for u in dummy_users]
+def get_users(db: Session = Depends(get_db)):
+    users = db.query(models.User).all()
+    return [{"nik": u.nik, "name": u.name, "role": u.role} for u in users]
 
 @app.post("/users")
-def add_user(user: UserCreate):
-    if any(u["nik"] == user.nik for u in dummy_users):
+def add_user(user: UserCreate, db: Session = Depends(get_db)):
+    if db.query(models.User).filter(models.User.nik == user.nik).first():
         raise HTTPException(status_code=400, detail="NIK already exists")
-    dummy_users.append(user.dict())
+    db_user = models.User(**user.dict())
+    db.add(db_user)
+    db.commit()
     return {"status": "success", "user": user}
 
 @app.put("/users/{nik}")
-def edit_user(nik: str, userData: UserEdit):
-    user = next((u for u in dummy_users if u["nik"] == nik), None)
+def edit_user(nik: str, userData: UserEdit, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.nik == nik).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    if userData.name: user["name"] = userData.name
-    if userData.password: user["password"] = userData.password
-    if userData.role: user["role"] = userData.role
+    if userData.name: user.name = userData.name
+    if userData.password: user.password = userData.password
+    if userData.role: user.role = userData.role
     
-    return {"status": "success", "user": user}
+    db.commit()
+    return {"status": "success", "user": {"nik": user.nik, "name": user.name, "role": user.role}}
 
 @app.get("/stores")
-def get_stores():
-    return dummy_stores
+def get_stores(db: Session = Depends(get_db)):
+    return db.query(models.Store).all()
 
 @app.post("/stores")
 async def register_store(
@@ -141,7 +164,8 @@ async def register_store(
     lat: float = Form(...),
     lon: float = Form(...),
     salesmanId: str = Form(...),
-    photo: UploadFile = File(...)
+    photo: UploadFile = File(...),
+    db: Session = Depends(get_db)
 ):
     # Save photo to uploads directory
     ext = os.path.splitext(photo.filename)[1]
@@ -151,68 +175,79 @@ async def register_store(
         shutil.copyfileobj(photo.file, buffer)
     # Create store entry
     store_id = str(uuid.uuid4())
-    store = {
-        "id": store_id,
-        "name": name,
-        "lat": lat,
-        "lon": lon,
-        "photo_url": f"/uploads/{unique_name}",
-        "historicalSales": 0,
-        "historicalRetur": 0,
-        "outstanding": 0,
-        "salesmanId": salesmanId
-    }
-    dummy_stores.append(store)
+    store = models.Store(
+        id=store_id,
+        name=name,
+        lat=lat,
+        lon=lon,
+        photo_url=f"/uploads/{unique_name}",
+        historicalSales=0,
+        historicalRetur=0,
+        outstanding=0,
+        salesmanId=salesmanId
+    )
+    db.add(store)
+    db.commit()
+    db.refresh(store)
     return {"status": "success", "store": store}
 
 @app.put("/stores/{store_id}")
-def edit_store(store_id: str, storeData: StoreEdit):
-    store = next((s for s in dummy_stores if s["id"] == store_id), None)
+def edit_store(store_id: str, storeData: StoreEdit, db: Session = Depends(get_db)):
+    store = db.query(models.Store).filter(models.Store.id == store_id).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
     
-    store["salesmanId"] = storeData.salesmanId
+    store.salesmanId = storeData.salesmanId
+    db.commit()
     return {"status": "success", "store": store}
 
 # --- Product Endpoints ---
 
 @app.get("/products")
-def get_products():
-    return dummy_products
+def get_products(db: Session = Depends(get_db)):
+    return db.query(models.Product).all()
 
 @app.post("/products")
-def add_product(product: Product):
-    if any(p["id"] == product.id for p in dummy_products):
+def add_product(product: Product, db: Session = Depends(get_db)):
+    if db.query(models.Product).filter(models.Product.id == product.id).first():
         raise HTTPException(status_code=400, detail="Product ID already exists")
-    dummy_products.append(product.dict())
+    db_product = models.Product(**product.dict())
+    db.add(db_product)
+    db.commit()
     return {"status": "success", "product": product}
 
 @app.put("/products/{product_id}")
-def edit_product(product_id: str, productData: Product):
-    product = next((p for p in dummy_products if p["id"] == product_id), None)
+def edit_product(product_id: str, productData: Product, db: Session = Depends(get_db)):
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    product.update(productData.dict())
+    for key, value in productData.dict().items():
+        setattr(product, key, value)
+    
+    db.commit()
     return {"status": "success", "product": product}
 
 @app.delete("/products/{product_id}")
-def delete_product(product_id: str):
-    global dummy_products
-    dummy_products = [p for p in dummy_products if p["id"] != product_id]
+def delete_product(product_id: str, db: Session = Depends(get_db)):
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    db.delete(product)
+    db.commit()
     return {"status": "success"}
 
 @app.get("/visits")
-def get_all_visits():
-    return visits_db
+def get_all_visits(db: Session = Depends(get_db)):
+    return db.query(models.Visit).all()
 
 @app.get("/visits/{salesman_id}")
-def get_visits(salesman_id: str):
-    return [v for v in visits_db if v["salesmanId"] == salesman_id]
+def get_visits(salesman_id: str, db: Session = Depends(get_db)):
+    return db.query(models.Visit).filter(models.Visit.salesmanId == salesman_id).all()
 
 @app.get("/visits/store/{store_id}")
-def get_visits_by_store(store_id: str):
-    return [v for v in visits_db if v["storeId"] == store_id]
+def get_visits_by_store(store_id: str, db: Session = Depends(get_db)):
+    return db.query(models.Visit).filter(models.Visit.storeId == store_id).all()
 
 @app.post("/visits")
 async def create_visit(
@@ -225,9 +260,9 @@ async def create_visit(
     tagihanAmount: float = Form(...),
     items: Optional[str] = Form(None),
     returns: Optional[str] = Form(None),
-    attachment: Optional[UploadFile] = File(None)
+    attachment: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db)
 ):
-    import json
     parsed_items = json.loads(items) if items else []
     parsed_returns = json.loads(returns) if returns else []
 
@@ -235,17 +270,12 @@ async def create_visit(
     if parsed_items:
         orderAmount = sum(item['quantity'] * item['price'] for item in parsed_items)
     
-    # If returns are provided, returAmount should be the sum
-    # (Note: we might need price for returns too if we want to be exact, 
-    # but for now let's assume salesman inputs the return value or we fetch it)
-    # The requirement says "input what item and how many", usually value is calculated from current price.
     if parsed_returns:
-        # Calculate return amount based on product price
         val = 0
         for r in parsed_returns:
-            prod = next((p for p in dummy_products if p["id"] == r['product_id']), None)
+            prod = db.query(models.Product).filter(models.Product.id == r['product_id']).first()
             if prod:
-                val += r['quantity'] * prod['price']
+                val += r['quantity'] * prod.price
         returAmount = val
 
     attachment_url = None
@@ -257,332 +287,287 @@ async def create_visit(
             shutil.copyfileobj(attachment.file, buffer)
         attachment_url = f"/uploads/{unique_name}"
 
-    visit_dict = {
-        "id": str(int(time.time() * 1000)),
-        "salesmanId": salesmanId,
-        "storeId": storeId,
-        "checkInTime": checkInTime,
-        "checkOutTime": checkOutTime,
-        "orderAmount": orderAmount,
-        "returAmount": returAmount,
-        "tagihanAmount": tagihanAmount,
-        "items": parsed_items,
-        "returns": parsed_returns,
-        "status": "pending",
-        "attachment_url": attachment_url
-    }
+    visit_id = str(int(time.time() * 1000))
+    visit = models.Visit(
+        id=visit_id,
+        salesmanId=salesmanId,
+        storeId=storeId,
+        checkInTime=checkInTime,
+        checkOutTime=checkOutTime,
+        orderAmount=orderAmount,
+        returAmount=returAmount,
+        tagihanAmount=tagihanAmount,
+        status="pending",
+        attachment_url=attachment_url
+    )
 
-    # Calculate due date: 3 days after check-in, ONLY if there is an order
+    # Calculate due date
     if orderAmount > 0:
         try:
             checkin_dt = datetime.fromisoformat(checkInTime.replace("Z", "+00:00"))
         except:
             checkin_dt = datetime.now()
-        visit_dict["dueDate"] = (checkin_dt + timedelta(days=3)).isoformat()
-    else:
-        visit_dict["dueDate"] = None
+        visit.dueDate = (checkin_dt + timedelta(days=3)).isoformat()
 
     # Payment Status Logic
     net_payable = orderAmount - returAmount
     if orderAmount > 0:
         if tagihanAmount >= net_payable:
-            visit_dict["paymentStatus"] = "Full Payment"
+            visit.paymentStatus = "Full Payment"
         elif tagihanAmount > 0:
-            visit_dict["paymentStatus"] = "Partial Payment"
+            visit.paymentStatus = "Partial Payment"
         else:
-            visit_dict["paymentStatus"] = "Unpaid"
+            visit.paymentStatus = "Unpaid"
     else:
-        visit_dict["paymentStatus"] = "Collection Only" if tagihanAmount > 0 else "-"
+        visit.paymentStatus = "Collection Only" if tagihanAmount > 0 else "-"
 
-    visits_db.append(visit_dict)
+    db.add(visit)
 
-    # Update the store's outstanding and historical amounts immediately (Live Stats)
-    store = next((s for s in dummy_stores if s["id"] == storeId), None)
-    if store:
-        store["outstanding"] = store.get("outstanding", 0) + orderAmount - tagihanAmount - returAmount
-        store["historicalSales"] = store.get("historicalSales", 0) + orderAmount
-        store["historicalRetur"] = store.get("historicalRetur", 0) + returAmount
-
-    # Deduct stock immediately (pending)
+    # Add items and returns
     for item in parsed_items:
-        prod = next((p for p in dummy_products if p["id"] == item['product_id']), None)
+        db_item = models.VisitItem(
+            visit_id=visit_id,
+            product_id=item['product_id'],
+            name=item['name'],
+            quantity=item['quantity'],
+            price=item['price']
+        )
+        db.add(db_item)
+        # Deduct stock
+        prod = db.query(models.Product).filter(models.Product.id == item['product_id']).first()
         if prod:
-            prod["fresh_amount"] = max(0, prod["fresh_amount"] - item['quantity'])
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
+            prod.fresh_amount = max(0, prod.fresh_amount - item['quantity'])
+            prod.quantity = prod.fresh_amount + prod.retur_amount
 
     for ret in parsed_returns:
-        prod = next((p for p in dummy_products if p["id"] == ret['product_id']), None)
+        db_ret = models.VisitReturn(
+            visit_id=visit_id,
+            product_id=ret['product_id'],
+            name=ret['name'],
+            quantity=ret['quantity']
+        )
+        db.add(db_ret)
+        # Adjust stock
+        prod = db.query(models.Product).filter(models.Product.id == ret['product_id']).first()
         if prod:
-            prod["retur_amount"] = prod["retur_amount"] + ret['quantity']
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
+            prod.retur_amount = prod.retur_amount + ret['quantity']
+            prod.quantity = prod.fresh_amount + prod.retur_amount
 
-    return {"status": "success", "visit": visit_dict}
+    # Update store balance
+    store = db.query(models.Store).filter(models.Store.id == storeId).first()
+    if store:
+        store.outstanding = store.outstanding + orderAmount - tagihanAmount - returAmount
+        store.historicalSales = store.historicalSales + orderAmount
+        store.historicalRetur = store.historicalRetur + returAmount
+
+    db.commit()
+    db.refresh(visit)
+    return {"status": "success", "visit": visit}
 
 @app.put("/visits/{visit_id}")
-def edit_visit(visit_id: str, visit_update: VisitCreate):
-    visit = next((v for v in visits_db if v["id"] == visit_id), None)
+def edit_visit(visit_id: str, visit_update: VisitCreate, db: Session = Depends(get_db)):
+    visit = db.query(models.Visit).filter(models.Visit.id == visit_id).first()
     if not visit:
         raise HTTPException(status_code=404, detail="Visit not found")
 
-    # Update store balance immediately (Live Stats)
-    store = next((s for s in dummy_stores if s["id"] == visit["storeId"]), None)
-    if store and visit["status"] != "rejected":
-        # Revert old visit impact
-        store["outstanding"] = store.get("outstanding", 0) - visit["orderAmount"] + visit["tagihanAmount"] + visit["returAmount"]
-        store["historicalSales"] = store.get("historicalSales", 0) - visit["orderAmount"]
-        store["historicalRetur"] = store.get("historicalRetur", 0) - visit["returAmount"]
+    store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
+    if store and visit.status != "rejected":
+        store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
+        store.historicalSales = store.historicalSales - visit.orderAmount
+        store.historicalRetur = store.historicalRetur - visit.returAmount
 
-    # If it was already validated, store original data for rollback
-    if visit["status"] == "validated":
-        # Store a deep copy for rollback
-        import copy
-        visit["_original"] = copy.deepcopy(visit)
-
-    # Reset status to pending after edit
-    visit["status"] = "pending"
-
-    # Revert old stock adjustment
-    for item in visit.get("items", []):
-        prod = next((p for p in dummy_products if p["id"] == item['product_id']), None)
+    # Revert stock
+    for item in visit.items:
+        prod = db.query(models.Product).filter(models.Product.id == item.product_id).first()
         if prod:
-            prod["fresh_amount"] = prod["fresh_amount"] + item['quantity']
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
-
-    for ret in visit.get("returns", []):
-        prod = next((p for p in dummy_products if p["id"] == ret['product_id']), None)
+            prod.fresh_amount = prod.fresh_amount + item.quantity
+            prod.quantity = prod.fresh_amount + prod.retur_amount
+    for ret in visit.returns:
+        prod = db.query(models.Product).filter(models.Product.id == ret.product_id).first()
         if prod:
-            prod["retur_amount"] = max(0, prod["retur_amount"] - ret['quantity'])
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
+            prod.retur_amount = max(0, prod.retur_amount - ret.quantity)
+            prod.quantity = prod.fresh_amount + prod.retur_amount
 
     # Update visit fields
-    visit["items"] = [item.dict() for item in (visit_update.items or [])]
-    visit["returns"] = [item.dict() for item in (visit_update.returns or [])]
-
-    # Recalculate amounts if items/returns are provided
-    if visit["items"]:
-        visit["orderAmount"] = sum(item['quantity'] * item['price'] for item in visit["items"])
-    else:
-        visit["orderAmount"] = visit_update.orderAmount
-
-    if visit["returns"]:
-        val = 0
-        for r in visit["returns"]:
-            prod = next((p for p in dummy_products if p["id"] == r['product_id']), None)
-            if prod:
-                val += r['quantity'] * prod['price']
-        visit["returAmount"] = val
-    else:
-        visit["returAmount"] = visit_update.returAmount
-
-    visit["tagihanAmount"] = visit_update.tagihanAmount
-
-    # Apply new stock adjustment
-    for item in visit.get("items", []):
-        prod = next((p for p in dummy_products if p["id"] == item['product_id']), None)
-        if prod:
-            prod["fresh_amount"] = max(0, prod["fresh_amount"] - item['quantity'])
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
-
-    for ret in visit.get("returns", []):
-        prod = next((p for p in dummy_products if p["id"] == ret['product_id']), None)
-        if prod:
-            prod["retur_amount"] = prod["retur_amount"] + ret['quantity']
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
+    visit.status = "pending"
     
-    # Logic: if order is fully paid by collection, no due date
-    if visit["orderAmount"] > 0 and visit["orderAmount"] != visit["tagihanAmount"]:
+    # Delete old items and returns
+    db.query(models.VisitItem).filter(models.VisitItem.visit_id == visit_id).delete()
+    db.query(models.VisitReturn).filter(models.VisitReturn.visit_id == visit_id).delete()
+
+    # Add new ones
+    order_total = 0
+    if visit_update.items:
+        for item in visit_update.items:
+            db_item = models.VisitItem(visit_id=visit_id, **item.dict())
+            db.add(db_item)
+            order_total += item.quantity * item.price
+            # Deduct stock
+            prod = db.query(models.Product).filter(models.Product.id == item.product_id).first()
+            if prod:
+                prod.fresh_amount = max(0, prod.fresh_amount - item.quantity)
+                prod.quantity = prod.fresh_amount + prod.retur_amount
+        visit.orderAmount = order_total
+    else:
+        visit.orderAmount = visit_update.orderAmount
+
+    retur_total = 0
+    if visit_update.returns:
+        for ret in visit_update.returns:
+            db_ret = models.VisitReturn(visit_id=visit_id, **ret.dict())
+            db.add(db_ret)
+            prod = db.query(models.Product).filter(models.Product.id == ret.product_id).first()
+            if prod:
+                retur_total += ret.quantity * prod.price
+                prod.retur_amount = prod.retur_amount + ret.quantity
+                prod.quantity = prod.fresh_amount + prod.retur_amount
+        visit.returAmount = retur_total
+    else:
+        visit.returAmount = visit_update.returAmount
+
+    visit.tagihanAmount = visit_update.tagihanAmount
+
+    # Logic for due date and payment status
+    if visit.orderAmount > 0 and visit.orderAmount != visit.tagihanAmount:
         try:
-            checkin_dt = datetime.fromisoformat(visit["checkInTime"].replace("Z", "+00:00"))
+            checkin_dt = datetime.fromisoformat(visit.checkInTime.replace("Z", "+00:00"))
         except:
             checkin_dt = datetime.now()
-        visit["dueDate"] = (checkin_dt + timedelta(days=3)).isoformat()
+        visit.dueDate = (checkin_dt + timedelta(days=3)).isoformat()
     else:
-        visit["dueDate"] = None
+        visit.dueDate = None
 
-    # Payment Status Logic
-    net_payable = visit["orderAmount"] - visit["returAmount"]
-    if visit["orderAmount"] > 0:
-        if visit["tagihanAmount"] >= net_payable:
-            visit["paymentStatus"] = "Full Payment"
-        elif visit["tagihanAmount"] > 0:
-            visit["paymentStatus"] = "Partial Payment"
+    net_payable = visit.orderAmount - visit.returAmount
+    if visit.orderAmount > 0:
+        if visit.tagihanAmount >= net_payable:
+            visit.paymentStatus = "Full Payment"
+        elif visit.tagihanAmount > 0:
+            visit.paymentStatus = "Partial Payment"
         else:
-            visit["paymentStatus"] = "Unpaid"
+            visit.paymentStatus = "Unpaid"
     else:
-        visit["paymentStatus"] = "Collection Only" if visit["tagihanAmount"] > 0 else "-"
+        visit.paymentStatus = "Collection Only" if visit.tagihanAmount > 0 else "-"
 
-    # Apply new store balance impact (Live Stats)
-    if store and visit["status"] != "rejected":
-        store["outstanding"] = store.get("outstanding", 0) + visit["orderAmount"] - visit["tagihanAmount"] - visit["returAmount"]
-        store["historicalSales"] = store.get("historicalSales", 0) + visit["orderAmount"]
-        store["historicalRetur"] = store.get("historicalRetur", 0) + visit["returAmount"]
+    if store:
+        store.outstanding = store.outstanding + visit.orderAmount - visit.tagihanAmount - visit.returAmount
+        store.historicalSales = store.historicalSales + visit.orderAmount
+        store.historicalRetur = store.historicalRetur + visit.returAmount
 
+    db.commit()
+    db.refresh(visit)
     return {"status": "success", "visit": visit}
 
 @app.post("/visits/{visit_id}/validate")
-def validate_visit(visit_id: str):
-    visit = next((v for v in visits_db if v["id"] == visit_id), None)
+def validate_visit(visit_id: str, db: Session = Depends(get_db)):
+    visit = db.query(models.Visit).filter(models.Visit.id == visit_id).first()
     if not visit:
         raise HTTPException(status_code=404, detail="Visit not found")
     
-    if visit["status"] == "validated":
-        return {"status": "already validated", "visit": visit}
-
-    visit["status"] = "validated"
-
-    # Store stats are already updated on create/edit
-    
-    # Update the store's outstanding and historical amounts
-    store = next((s for s in dummy_stores if s["id"] == visit["storeId"]), None)
-    if store:
-        # Re-check logic for validation time
-        net_payable = visit["orderAmount"] - visit["returAmount"]
-        if visit["tagihanAmount"] >= net_payable:
-            visit["dueDate"] = None
-            visit["paymentStatus"] = "Full Payment"
-
-    # No stock update here as it's already done on create
+    visit.status = "validated"
+    db.commit()
     return {"status": "success", "visit": visit}
 
 @app.delete("/visits/{visit_id}")
-def delete_visit(visit_id: str):
-    global visits_db
-    visit = next((v for v in visits_db if v["id"] == visit_id), None)
+def delete_visit(visit_id: str, db: Session = Depends(get_db)):
+    visit = db.query(models.Visit).filter(models.Visit.id == visit_id).first()
     if not visit:
         raise HTTPException(status_code=404, detail="Visit not found")
     
     # Restore stock
-    for item in visit.get("items", []):
-        prod = next((p for p in dummy_products if p["id"] == item['product_id']), None)
+    for item in visit.items:
+        prod = db.query(models.Product).filter(models.Product.id == item.product_id).first()
         if prod:
-            prod["fresh_amount"] = prod["fresh_amount"] + item['quantity']
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
-
-    for ret in visit.get("returns", []):
-        prod = next((p for p in dummy_products if p["id"] == ret['product_id']), None)
+            prod.fresh_amount = prod.fresh_amount + item.quantity
+            prod.quantity = prod.fresh_amount + prod.retur_amount
+    for ret in visit.returns:
+        prod = db.query(models.Product).filter(models.Product.id == ret.product_id).first()
         if prod:
-            prod["retur_amount"] = max(0, prod["retur_amount"] - ret['quantity'])
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
+            prod.retur_amount = max(0, prod.retur_amount - ret.quantity)
+            prod.quantity = prod.fresh_amount + prod.retur_amount
 
-    # Revert store balance (Live Stats)
-    if visit["status"] != "rejected":
-        store = next((s for s in dummy_stores if s["id"] == visit["storeId"]), None)
+    # Revert store balance
+    if visit.status != "rejected":
+        store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
         if store:
-            store["outstanding"] = store.get("outstanding", 0) - visit["orderAmount"] + visit["tagihanAmount"] + visit["returAmount"]
-            store["historicalSales"] = store.get("historicalSales", 0) - visit["orderAmount"]
-            store["historicalRetur"] = store.get("historicalRetur", 0) - visit["returAmount"]
+            store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
+            store.historicalSales = store.historicalSales - visit.orderAmount
+            store.historicalRetur = store.historicalRetur - visit.returAmount
 
-    visits_db = [v for v in visits_db if v["id"] != visit_id]
+    db.delete(visit)
+    db.commit()
     return {"status": "success"}
 
 @app.post("/visits/{visit_id}/reject")
-def reject_visit(visit_id: str):
-    visit = next((v for v in visits_db if v["id"] == visit_id), None)
+def reject_visit(visit_id: str, db: Session = Depends(get_db)):
+    visit = db.query(models.Visit).filter(models.Visit.id == visit_id).first()
     if not visit:
         raise HTTPException(status_code=404, detail="Visit not found")
     
-    if visit["status"] == "rejected":
+    if visit.status == "rejected":
         return {"status": "already rejected"}
 
-    # If this was an edit of a previously validated visit, roll back to original
-    if "_original" in visit:
-        original = visit["_original"]
-        
-        # Revert current pending edit impact (Live Stats)
-        store = next((s for s in dummy_stores if s["id"] == visit["storeId"]), None)
-        if store:
-            store["outstanding"] = store.get("outstanding", 0) - visit["orderAmount"] + visit["tagihanAmount"] + visit["returAmount"]
-            store["historicalSales"] = store.get("historicalSales", 0) - visit["orderAmount"]
-            store["historicalRetur"] = store.get("historicalRetur", 0) - visit["returAmount"]
-
-        # Restore original visit data
-        visit.clear()
-        visit.update(original)
-        
-        # Restore original store balance (Live Stats)
-        if store:
-            store["outstanding"] = store.get("outstanding", 0) + visit["orderAmount"] - visit["tagihanAmount"] - visit["returAmount"]
-            store["historicalSales"] = store.get("historicalSales", 0) + visit["orderAmount"]
-            store["historicalRetur"] = store.get("historicalRetur", 0) + visit["returAmount"]
-        
-        # Restore original stock adjustment
-        for item in visit.get("items", []):
-            prod = next((p for p in dummy_products if p["id"] == item['product_id']), None)
-            if prod:
-                prod["fresh_amount"] = max(0, prod["fresh_amount"] - item['quantity'])
-                prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
-        for ret in visit.get("returns", []):
-            prod = next((p for p in dummy_products if p["id"] == ret['product_id']), None)
-            if prod:
-                prod["retur_amount"] = prod["retur_amount"] + ret['quantity']
-                prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
-        
-        return {"status": "success", "message": "Rolled back to previous approved state"}
-
-    # Restore stock for new visit
-    for item in visit.get("items", []):
-        prod = next((p for p in dummy_products if p["id"] == item['product_id']), None)
+    # Restore stock
+    for item in visit.items:
+        prod = db.query(models.Product).filter(models.Product.id == item.product_id).first()
         if prod:
-            prod["fresh_amount"] = prod["fresh_amount"] + item['quantity']
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
+            prod.fresh_amount = prod.fresh_amount + item.quantity
+            prod.quantity = prod.fresh_amount + prod.retur_amount
 
-    for ret in visit.get("returns", []):
-        prod = next((p for p in dummy_products if p["id"] == ret['product_id']), None)
+    for ret in visit.returns:
+        prod = db.query(models.Product).filter(models.Product.id == ret.product_id).first()
         if prod:
-            prod["retur_amount"] = max(0, prod["retur_amount"] - ret['quantity'])
-            prod["quantity"] = prod["fresh_amount"] + prod["retur_amount"]
+            prod.retur_amount = max(0, prod.retur_amount - ret.quantity)
+            prod.quantity = prod.fresh_amount + prod.retur_amount
 
-    # Revert store balance if it was not already rejected (Live Stats)
-    if visit["status"] != "rejected":
-        store = next((s for s in dummy_stores if s["id"] == visit["storeId"]), None)
-        if store:
-            store["outstanding"] = store.get("outstanding", 0) - visit["orderAmount"] + visit["tagihanAmount"] + visit["returAmount"]
-            store["historicalSales"] = store.get("historicalSales", 0) - visit["orderAmount"]
-            store["historicalRetur"] = store.get("historicalRetur", 0) - visit["returAmount"]
+    # Revert store balance
+    store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
+    if store:
+        store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
+        store.historicalSales = store.historicalSales - visit.orderAmount
+        store.historicalRetur = store.historicalRetur - visit.returAmount
 
-    visit["status"] = "rejected"
+    visit.status = "rejected"
+    db.commit()
     return {"status": "success"}
 
 @app.get("/stats/admin")
-def get_admin_stats():
+def get_admin_stats(db: Session = Depends(get_db)):
     now = datetime.now()
-    seven_days_ago = now - timedelta(days=7)
     current_month = now.month
     current_year = now.year
+    seven_days_ago = (now - timedelta(days=7)).isoformat()
 
+    visits = db.query(models.Visit).all()
+    
     sales_mtd = 0
     retur_mtd = 0
-    
     active_store_ids = set()
-    # Count validated visits OR the original state of pending edits
-    relevant_visits = []
-    for v in visits_db:
-        if v["status"] == "validated":
-            relevant_visits.append(v)
-        elif v["status"] == "pending" and "_original" in v:
-            relevant_visits.append(v["_original"])
-    
-    for v in relevant_visits:
-        visit_date = datetime.fromisoformat(v["checkInTime"].replace("Z", "+00:00")).replace(tzinfo=None)
-        
-        if visit_date.month == current_month and visit_date.year == current_year:
-            sales_mtd += v["orderAmount"]
-            retur_mtd += v["returAmount"]
-            
-        if visit_date >= seven_days_ago and v["orderAmount"] > 0:
-            active_store_ids.add(v["storeId"])
 
-    total_outstanding = sum(s.get("outstanding", 0) for s in dummy_stores)
-    total_stores = len(dummy_stores)
+    for v in visits:
+        if v.status == "rejected": continue
+        try:
+            visit_date = datetime.fromisoformat(v.checkInTime.replace("Z", "+00:00"))
+        except:
+            continue
+            
+        if visit_date.month == current_month and visit_date.year == current_year:
+            sales_mtd += v.orderAmount
+            retur_mtd += v.returAmount
+            
+        if v.checkInTime >= seven_days_ago and v.orderAmount > 0:
+            active_store_ids.add(v.storeId)
+
+    total_stores = db.query(models.Store).count()
     active_count = len(active_store_ids)
-    inactive_count = total_stores - active_count
+    total_outstanding_rows = db.query(models.Store).with_entities(models.Store.outstanding).all()
+    total_outstanding = sum(s[0] for s in total_outstanding_rows)
 
     return {
         "sales_mtd": sales_mtd,
         "retur_mtd": retur_mtd,
         "total_outstanding": total_outstanding,
         "active_stores": active_count,
-        "inactive_stores": inactive_count,
+        "inactive_stores": total_stores - active_count,
         "total_stores": total_stores
     }
 
