@@ -133,6 +133,7 @@ dist/
 __pycache__/
 *.py[cod]
 *$py.class
+*.db
 venv/
 .venv/
 env/
