@@ -66,6 +66,17 @@ class VisitReturnBase(BaseModel):
     class Config:
         orm_mode = True
 
+class VisitHistoryBase(BaseModel):
+    change_time: str
+    old_order: float
+    new_order: float
+    old_retur: float
+    new_retur: float
+    old_tagihan: float
+    new_tagihan: float
+    class Config:
+        orm_mode = True
+
 class Visit(BaseModel):
     id: str
     salesmanId: str
@@ -82,6 +93,7 @@ class Visit(BaseModel):
     items: List[VisitItemBase] = []
     returns: List[VisitReturnBase] = []
     attachments: List[AttachmentBase] = []
+    history: List[VisitHistoryBase] = []
     class Config:
         orm_mode = True
 
@@ -286,14 +298,18 @@ async def create_visit(
             checkin_dt = datetime.now()
         visit.dueDate = (checkin_dt + timedelta(days=3)).isoformat()
 
-    if tagihanAmount > 0 and orderAmount == 0:
-        visit.paymentStatus = "Paid"
-    elif tagihanAmount >= orderAmount and orderAmount > 0:
-        visit.paymentStatus = "Paid"
+    net_order = orderAmount - returAmount
+    if orderAmount > 0:
+        if tagihanAmount >= net_order:
+            visit.paymentStatus = "Full Payment"
+        elif tagihanAmount > 0:
+            visit.paymentStatus = "Partial Payment"
+        else:
+            visit.paymentStatus = "Unpaid"
     elif tagihanAmount > 0:
-        visit.paymentStatus = "Partial"
+        visit.paymentStatus = "Collection Only"
     else:
-        visit.paymentStatus = "Collection Only" if tagihanAmount > 0 else "-"
+        visit.paymentStatus = "Check-in Only"
 
     for item in parsed_items:
         db_item = models.VisitItem(
@@ -317,8 +333,13 @@ async def create_visit(
             prod.retur_amount = prod.retur_amount + ret['quantity']
             prod.quantity = prod.fresh_amount + prod.retur_amount
 
-    # NOTE: Store balances are now updated ONLY upon validation, not creation.
-    
+    # Update Store visit dates
+    store = db.query(models.Store).filter(models.Store.id == storeId).first()
+    if store:
+        if not store.first_visit_date:
+            store.first_visit_date = checkInTime
+        store.last_visited_date = checkInTime
+
     db.commit()
     return {"status": "success", "visit_id": visit_id}
 
@@ -327,7 +348,8 @@ def get_all_visits(db: Session = Depends(get_db)):
     return db.query(models.Visit).options(
         joinedload(models.Visit.items), 
         joinedload(models.Visit.returns),
-        joinedload(models.Visit.attachments)
+        joinedload(models.Visit.attachments),
+        joinedload(models.Visit.history)
     ).all()
 
 @app.get("/api/visits/{salesman_id}")
@@ -335,7 +357,8 @@ def get_visits(salesman_id: str, db: Session = Depends(get_db)):
     return db.query(models.Visit).options(
         joinedload(models.Visit.items), 
         joinedload(models.Visit.returns),
-        joinedload(models.Visit.attachments)
+        joinedload(models.Visit.attachments),
+        joinedload(models.Visit.history)
     ).filter(models.Visit.salesmanId == salesman_id).all()
 
 @app.get("/api/visits/store/{store_id}")
@@ -343,7 +366,8 @@ def get_visits_by_store(store_id: str, db: Session = Depends(get_db)):
     return db.query(models.Visit).options(
         joinedload(models.Visit.items), 
         joinedload(models.Visit.returns),
-        joinedload(models.Visit.attachments)
+        joinedload(models.Visit.attachments),
+        joinedload(models.Visit.history)
     ).filter(models.Visit.storeId == store_id).all()
 
 @app.post("/api/visits/{id}/validate")
@@ -408,12 +432,44 @@ async def update_visit(
         store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
         store.historicalSales = store.historicalSales - visit.orderAmount
 
+    # Save history before update
+    history_rec = models.VisitHistory(
+        visit_id=id,
+        change_time=datetime.now().isoformat(),
+        old_order=visit.orderAmount,
+        old_retur=visit.returAmount,
+        old_tagihan=visit.tagihanAmount,
+        new_order=orderAmount if orderAmount is not None else visit.orderAmount,
+        new_retur=returAmount if returAmount is not None else visit.returAmount,
+        new_tagihan=tagihanAmount if tagihanAmount is not None else visit.tagihanAmount
+    )
+    db.add(history_rec)
+
     if orderAmount is not None: visit.orderAmount = orderAmount
     if returAmount is not None: visit.returAmount = returAmount
     if tagihanAmount is not None: visit.tagihanAmount = tagihanAmount
-    if paymentStatus is not None: visit.paymentStatus = paymentStatus
+
+    net_order = visit.orderAmount - visit.returAmount
+    if visit.orderAmount > 0:
+        if visit.tagihanAmount >= net_order:
+            visit.paymentStatus = "Full Payment"
+        elif visit.tagihanAmount > 0:
+            visit.paymentStatus = "Partial Payment"
+        else:
+            visit.paymentStatus = "Unpaid"
+    elif visit.tagihanAmount > 0:
+        visit.paymentStatus = "Collection Only"
+    else:
+        visit.paymentStatus = "Check-in Only"
+
+    # Only override if explicitly provided AND different from calculated (or just ignore if it's 'Unpaid' but calculated as 'Full Payment')
+    if paymentStatus is not None and paymentStatus != visit.paymentStatus:
+        # If the backend calculated a better status, keep it. If the user explicitly sets something else, respect it?
+        # Actually, let's just make the backend calculation authoritative for now.
+        pass
     
     visit.status = "pending"
+    visit.updated_at = datetime.now().isoformat()
 
     if items:
         parsed_items = json.loads(items)
@@ -448,6 +504,9 @@ async def update_visit(
             db.add(db_att)
             if not visit.attachment_url: visit.attachment_url = url
         
+    if store:
+        store.last_visited_date = datetime.now().isoformat()
+
     db.commit()
     return {"status": "success"}
 

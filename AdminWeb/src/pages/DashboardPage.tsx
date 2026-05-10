@@ -5,17 +5,18 @@ import {
   Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, Chip, IconButton, Dialog,
   DialogTitle, DialogContent, DialogActions, TextField,
-  Button, TableSortLabel, MenuItem, Select, InputLabel, FormControl, Tooltip
+  Button, TableSortLabel, MenuItem, Select, InputLabel, FormControl, Tooltip, Collapse
 } from '@mui/material';
 import {
   Search as SearchIcon, MoreHoriz as MoreHorizIcon, Close as CloseIcon,
   Inventory as InventoryIcon, AssignmentReturn as ReturnIcon, Payment as PaymentIcon,
   TrendingUp, ErrorOutline, LocalShipping, Edit as EditIcon, MoreVert as MoreVertIcon,
-  PhotoLibrary as PhotoLibraryIcon, History as HistoryIcon
+  PhotoLibrary as PhotoLibraryIcon, History as HistoryIcon,
+  KeyboardArrowDown, KeyboardArrowUp
 } from '@mui/icons-material';
 import {
   getStats, getVisits, getStores, updateVisit, getUsers,
-  type AdminStats, type Visit, type Store, type User
+  type AdminStats, type Visit, type Store, type User, type VisitHistory
 } from '../api';
 import {
   Tooltip as RechartsTooltip, ResponsiveContainer, Cell, PieChart, Pie,
@@ -67,6 +68,87 @@ function StatCard({ title, value, icon, color, subtext }: StatCardProps) {
 }
 
 type Order = 'asc' | 'desc';
+
+function VisitRow({ v, getStoreName, formatCurrency }: any) {
+  const [open, setOpen] = useState(false);
+  const hasHistory = v.history && v.history.length > 0;
+
+  return (
+    <React.Fragment>
+      <TableRow hover sx={{ '& > *': { borderBottom: 'unset' } }}>
+        <TableCell>
+          {hasHistory && (
+            <IconButton aria-label="expand row" size="small" onClick={() => setOpen(!open)}>
+              {open ? <KeyboardArrowUp /> : <KeyboardArrowDown />}
+            </IconButton>
+          )}
+        </TableCell>
+        <TableCell>
+          <Typography variant="body2">{new Date(v.checkInTime).toLocaleDateString()}</Typography>
+          {v.updated_at && <Typography variant="caption" color="textSecondary" display="block">Updated: {new Date(v.updated_at).toLocaleDateString()}</Typography>}
+        </TableCell>
+        <TableCell>
+          <Typography variant="caption" display="block"><b>In:</b> {new Date(v.checkInTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Typography>
+          <Typography variant="caption" display="block"><b>Out:</b> {new Date(v.checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Typography>
+        </TableCell>
+        <TableCell sx={{ fontWeight: '500' }}>{getStoreName(v.storeId)}</TableCell>
+        <TableCell align="right">{formatCurrency(v.orderAmount)}</TableCell>
+        <TableCell align="right" sx={{ color: 'error.main' }}>{formatCurrency(v.returAmount)}</TableCell>
+        <TableCell align="right" sx={{ color: 'success.main' }}>{formatCurrency(v.tagihanAmount)}</TableCell>
+        <TableCell>
+          <Chip 
+            label={v.status} 
+            size="small" 
+            color={v.status === 'validated' ? 'success' : 'warning'} 
+            variant="outlined"
+            sx={{ textTransform: 'capitalize' }}
+          />
+        </TableCell>
+      </TableRow>
+      {hasHistory && (
+        <TableRow>
+          <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={8}>
+            <Collapse in={open} timeout="auto" unmountOnExit>
+              <Box sx={{ margin: 1, p: 2, bgcolor: '#f8fafc', borderRadius: 2 }}>
+                <Typography variant="subtitle2" gutterBottom component="div" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <HistoryIcon fontSize="small" color="info" /> Edit History
+                </Typography>
+                <Table size="small" aria-label="purchases">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Time</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Old Order</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold', color: 'primary.main' }}>New Order</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Old Return</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold', color: 'error.main' }}>New Return</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Old Collected</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold', color: 'success.main' }}>New Collected</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {v.history.map((h: any, idx: number) => (
+                      <TableRow key={idx}>
+                        <TableCell component="th" scope="row">
+                          {new Date(h.change_time).toLocaleString()}
+                        </TableCell>
+                        <TableCell>{formatCurrency(h.old_order)}</TableCell>
+                        <TableCell sx={{ color: 'primary.main', fontWeight: 'bold' }}>{formatCurrency(h.new_order)}</TableCell>
+                        <TableCell>{formatCurrency(h.old_retur)}</TableCell>
+                        <TableCell sx={{ color: 'error.main', fontWeight: 'bold' }}>{formatCurrency(h.new_retur)}</TableCell>
+                        <TableCell>{formatCurrency(h.old_tagihan)}</TableCell>
+                        <TableCell sx={{ color: 'success.main', fontWeight: 'bold' }}>{formatCurrency(h.new_tagihan)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Box>
+            </Collapse>
+          </TableCell>
+        </TableRow>
+      )}
+    </React.Fragment>
+  );
+}
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -708,6 +790,43 @@ export default function DashboardPage() {
                 )}
             </Grid>
 
+            {/* Audit Log / History Section */}
+            {viewVisit?.history && viewVisit.history.length > 0 && (
+              <Grid item xs={12} sx={{ p: 3, bgcolor: '#f1f5f9', borderTop: '1px solid #e2e8f0' }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <HistoryIcon color="info" /> Change Audit Log
+                </Typography>
+                <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
+                  <Table size="small">
+                    <TableHead sx={{ bgcolor: '#f8fafc' }}>
+                      <TableRow>
+                        <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}>Time</TableCell>
+                        <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}>Old Order</TableCell>
+                        <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}>New Order</TableCell>
+                        <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}>Old Return</TableCell>
+                        <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}>New Return</TableCell>
+                        <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}>Old Collected</TableCell>
+                        <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}>New Collected</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {viewVisit.history.map((h: any, idx: number) => (
+                        <TableRow key={idx}>
+                          <TableCell sx={{ fontSize: '0.7rem' }}>{new Date(h.change_time).toLocaleString()}</TableCell>
+                          <TableCell sx={{ fontSize: '0.7rem' }}>{formatCurrency(h.old_order)}</TableCell>
+                          <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'primary.main' }}>{formatCurrency(h.new_order)}</TableCell>
+                          <TableCell sx={{ fontSize: '0.7rem' }}>{formatCurrency(h.old_retur)}</TableCell>
+                          <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'error.main' }}>{formatCurrency(h.new_retur)}</TableCell>
+                          <TableCell sx={{ fontSize: '0.7rem' }}>{formatCurrency(h.old_tagihan)}</TableCell>
+                          <TableCell sx={{ fontSize: '0.7rem', fontWeight: 'bold', color: 'success.main' }}>{formatCurrency(h.new_tagihan)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Grid>
+            )}
+
             {/* Gallery Section */}
             <Grid item xs={12} sx={{ p: 3, bgcolor: 'grey.50', borderTop: '1px solid #eee' }}>
                 <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -810,7 +929,9 @@ export default function DashboardPage() {
             <Table stickyHeader>
               <TableHead>
                 <TableRow>
+                  <TableCell />
                   <TableCell sx={{ fontWeight: 'bold' }}>Date</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>In / Out</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }}>Store</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }} align="right">Order</TableCell>
                   <TableCell sx={{ fontWeight: 'bold' }} align="right">Return</TableCell>
@@ -826,23 +947,8 @@ export default function DashboardPage() {
                   })
                   .sort((a, b) => new Date(b.checkInTime).getTime() - new Date(a.checkInTime).getTime())
                   .map(v => (
-                  <TableRow key={v.id} hover>
-                    <TableCell>{new Date(v.checkInTime).toLocaleDateString()}</TableCell>
-                    <TableCell sx={{ fontWeight: '500' }}>{getStoreName(v.storeId)}</TableCell>
-                    <TableCell align="right">{formatCurrency(v.orderAmount)}</TableCell>
-                    <TableCell align="right" sx={{ color: 'error.main' }}>{formatCurrency(v.returAmount)}</TableCell>
-                    <TableCell align="right" sx={{ color: 'success.main' }}>{formatCurrency(v.tagihanAmount)}</TableCell>
-                    <TableCell>
-                      <Chip 
-                        label={v.status} 
-                        size="small" 
-                        color={v.status === 'validated' ? 'success' : 'warning'} 
-                        variant="outlined"
-                        sx={{ textTransform: 'capitalize' }}
-                      />
-                    </TableCell>
-                  </TableRow>
-                ))}
+                    <VisitRow key={v.id} v={v} getStoreName={getStoreName} formatCurrency={formatCurrency} />
+                  ))}
                 {allVisits.filter(v => {
                   const salesman = users.find(u => u.name === historySalesman || u.nik === historySalesman);
                   return v.salesmanId === historySalesman || v.salesmanId === salesman?.nik;

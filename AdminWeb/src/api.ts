@@ -41,6 +41,16 @@ export interface Store {
   salesmanId?: string;
 }
 
+export interface VisitHistory {
+  change_time: string;
+  old_order: number;
+  new_order: number;
+  old_retur: number;
+  new_retur: number;
+  old_tagihan: number;
+  new_tagihan: number;
+}
+
 export interface Visit {
   id: string;
   salesmanId: string;
@@ -56,6 +66,8 @@ export interface Visit {
   attachment_url?: string;
   items?: OrderItem[];
   returns?: ReturnItem[];
+  updated_at?: string;
+  history?: VisitHistory[];
   _original?: Visit;
 }
 

@@ -198,16 +198,32 @@ export default function StoreDetailScreen() {
     }
   };
 
-  const handleOpenEdit = (v: any) => {
-    setEditingVisit(v);
-    setEditOrderItems(v.items || []);
-    setEditReturnItems(v.returns || []);
-    setEditAttachments([]); // Start with empty for "new" attachments, or we can list existing
-    setEditForm({
-      order: String(v.orderAmount),
-      retur: String(v.returAmount),
-      tagihan: String(v.tagihanAmount)
-    });
+  const handleOpenEdit = async (v: any) => {
+    try {
+      // Check location for strict update
+      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const distance = getDistance(location.coords.latitude, location.coords.longitude, store.lat, store.lon);
+      
+      if (distance > 100) {
+        Alert.alert(
+          "Outside Radius",
+          `You must be within 100m of the store to update this transaction. Current distance: ${Math.round(distance)}m`
+        );
+        return;
+      }
+
+      setEditingVisit(v);
+      setEditOrderItems(v.items || []);
+      setEditReturnItems(v.returns || []);
+      setEditAttachments([]); 
+      setEditForm({
+        order: String(v.orderAmount),
+        retur: String(v.returAmount),
+        tagihan: String(v.tagihanAmount)
+      });
+    } catch (error) {
+      Alert.alert("Location Error", "Could not verify your location. Please ensure GPS is active.");
+    }
   };
 
   const handleCloseEdit = () => {
@@ -431,6 +447,25 @@ export default function StoreDetailScreen() {
   }, [editReturnItems, products]);
 
   const formatCurrency = (amount: number) => 'Rp ' + (amount || 0).toLocaleString('id-ID');
+  
+  const formatDate = (isoString: string) => {
+    if (!isoString) return '-';
+    const date = new Date(isoString);
+    return date.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371e3; // metres
+    const φ1 = lat1 * Math.PI/180;
+    const φ2 = lat2 * Math.PI/180;
+    const Δφ = (lat2-lat1) * Math.PI/180;
+    const Δλ = (lon2-lon1) * Math.PI/180;
+    const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+            Math.cos(φ1) * Math.cos(φ2) *
+            Math.sin(Δλ/2) * Math.sin(Δλ/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c; // in metres
+  };
 
   const getLeafletHTML = () => {
     if (!store) return '';
@@ -511,12 +546,13 @@ export default function StoreDetailScreen() {
   };
 
   const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Full Payment': return '#38a169';
-      case 'Partial Payment': return '#3182ce';
-      case 'Unpaid': return '#e53e3e';
-      default: return '#718096';
-    }
+    if (!status) return '#718096';
+    const s = status.toLowerCase();
+    if (s.includes('validated') || s.includes('full') || s.includes('paid')) return '#38a169'; // Green
+    if (s.includes('partial') || s.includes('collection')) return '#3182ce'; // Blue
+    if (s.includes('pending')) return '#f6ad55'; // Orange
+    if (s.includes('unpaid') || s.includes('rejected')) return '#e53e3e'; // Red
+    return '#718096';
   };
 
   if (!store) return (
@@ -539,58 +575,33 @@ export default function StoreDetailScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Store Photo */}
-        {/* Store Photos Gallery */}
-        {store.photos && Array.isArray(store.photos) && store.photos.length > 0 && (
-          <View style={styles.photoContainer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }}>
-              {store.photos.map((p: any) => (
-                <TouchableOpacity key={p.id} onPress={() => setFullScreenImage(`${SERVER_URL}${p.url}`)}>
-                  <Image
-                    source={{ uri: `${SERVER_URL}${p.url}` }}
-                    style={[styles.storeImage, { width: 300, marginRight: 10 }]}
-                    resizeMode="cover"
-                  />
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        )}
-        
-        {/* Fallback for legacy single photo */}
-        {!store.photos && store.photo_url && (
-          <View style={styles.photoContainer}>
-            <Image
-              source={{ uri: `${SERVER_URL}${store.photo_url}` }}
-              style={styles.storeImage}
-              resizeMode="cover"
-            />
-          </View>
-        )}
-
-        {/* Store Info Cards */}
+        {/* Store Stats Cards */}
         <View style={styles.infoGrid}>
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>Hist. Sales</Text>
-            <Text style={styles.infoValue}>{formatCurrency(store.historicalSales)}</Text>
-          </View>
-          <View style={[styles.infoCard, { borderLeftWidth: 4, borderLeftColor: '#38a169' }]}>
+          <View style={[styles.infoCard, { borderLeftWidth: 4, borderLeftColor: '#10b981' }]}>
             <Text style={styles.infoLabel}>Net Sales</Text>
-            <Text style={[styles.infoValue, { color: '#38a169' }]}>
-              {formatCurrency((store.historicalSales || 0) - (store.historicalRetur || 0))}
+            <Text style={[styles.infoValue, { color: '#059669' }]}>
+              {formatCurrency(Number(orderAmount) - Number(returAmount))}
             </Text>
           </View>
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>Hist. Retur</Text>
-            <Text style={styles.infoValue}>{formatCurrency(store.historicalRetur)}</Text>
+          <View style={[styles.infoCard, { borderLeftWidth: 4, borderLeftColor: '#3b82f6' }]}>
+            <Text style={styles.infoLabel}>Hist. Sales</Text>
+            <Text style={[styles.infoValue, { color: '#1d4ed8' }]}>
+              {formatCurrency(store.historicalSales)}
+            </Text>
           </View>
-          <View style={[styles.infoCard, { borderLeftWidth: 4, borderLeftColor: '#f6ad55' }]}>
-            <Text style={styles.infoLabel}>Retur Amount</Text>
-            <Text style={[styles.infoValue, { color: '#dd6b20' }]}>{formatCurrency(store.historicalRetur)}</Text>
+          
+          <View style={[styles.infoCard, { borderLeftWidth: 4, borderLeftColor: '#f59e0b' }]}>
+            <Text style={styles.infoLabel}>Returns</Text>
+            <Text style={[styles.infoValue, { color: '#d97706' }]}>{formatCurrency(Number(returAmount))}</Text>
           </View>
-          <View style={[styles.infoCard, styles.infoCardFull]}>
-            <Text style={styles.infoLabel}>Outstanding Amount</Text>
-            <Text style={[styles.infoValue, { color: '#e53e3e' }]}>{formatCurrency(store.outstanding)}</Text>
+          <View style={[styles.infoCard, { borderLeftWidth: 4, borderLeftColor: '#ef4444' }]}>
+            <Text style={styles.infoLabel}>Hist. Returns</Text>
+            <Text style={[styles.infoValue, { color: '#b91c1c' }]}>{formatCurrency(store.historicalRetur)}</Text>
+          </View>
+          
+          <View style={[styles.infoCard, styles.infoCardFull, { borderLeftColor: '#6366f1' }]}>
+            <Text style={styles.infoLabel}>Outstanding Balance</Text>
+            <Text style={[styles.infoValue, { color: '#4338ca', fontSize: 18 }]}>{formatCurrency(store.outstanding)}</Text>
           </View>
         </View>
 
@@ -606,42 +617,49 @@ export default function StoreDetailScreen() {
               const date = new Date(v.checkInTime);
               const dateStr = date.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
               const timeStr = date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-              const dueDate = v.dueDate ? new Date(v.dueDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '-';
-              const isOverdue = v.dueDate && new Date(v.dueDate) < new Date();
 
               return (
                 <View key={v.id || idx} style={styles.historyCard}>
                   <View style={styles.historyRow}>
-                    <Text style={styles.historyDate}>{dateStr}</Text>
-                    <TouchableOpacity onPress={() => handleOpenEdit(v)}>
-                      <Text style={{ color: '#0066cc', fontWeight: 'bold' }}>Edit</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={styles.historyRow}>
-                    <Text style={styles.historyTime}>{timeStr}</Text>
-                    <View style={[styles.paymentBadge, { backgroundColor: getStatusColor(v.paymentStatus) }]}>
-                      <Text style={styles.paymentBadgeText}>{v.paymentStatus || '-'}</Text>
+                    <View>
+                      <Text style={styles.historyDate}>{dateStr}</Text>
+                      <Text style={styles.historyTime}>
+                        {timeStr} • {v.paymentStatus || 'No Transaction'}
+                        {v.updated_at && <Text style={{ fontStyle: 'italic' }}> • Updated</Text>}
+                      </Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      <View style={[styles.paymentBadge, { backgroundColor: getStatusColor(v.paymentStatus || '') }]}>
+                        <Text style={styles.paymentBadgeText}>{v.paymentStatus || 'N/A'}</Text>
+                      </View>
+                      <TouchableOpacity onPress={() => handleOpenEdit(v)}>
+                        <Text style={styles.editLink}>Edit</Text>
+                      </TouchableOpacity>
                     </View>
                   </View>
 
-                  <View style={[styles.historyRow, { marginTop: 8 }]}>
-                    <Text style={styles.historyLabel}>📅 Due Date</Text>
-                    <Text style={[styles.historyAmount, isOverdue && { color: '#e53e3e', fontWeight: '700' }]}>
-                      {dueDate} {isOverdue ? '⚠️' : ''}
-                    </Text>
-                  </View>
+                  <View style={styles.historyDivider} />
 
-                  <View style={[styles.historyRow, { borderTopWidth: 1, borderTopColor: '#edf2f7', paddingTop: 6, marginTop: 6 }]}>
-                    <Text style={styles.historyLabel}>Order / Tagihan</Text>
-                    <Text style={styles.historyAmount}>{formatCurrency(order)} / {formatCurrency(tagihan)}</Text>
-                  </View>
-
-                  <View style={[styles.historyRow, { marginTop: 4 }]}>
-                    <Text style={[styles.historyLabel, { fontWeight: '700' }]}>Net Sales</Text>
-                    <Text style={[styles.historyAmount, { fontWeight: '700', color: netSales >= 0 ? '#38a169' : '#e53e3e' }]}>
-                      {formatCurrency(netSales)}
-                    </Text>
+                  <View style={styles.historyDetails}>
+                    <View style={styles.historyDetailRow}>
+                      <Text style={styles.historyLabel}>Order Total</Text>
+                      <Text style={styles.historyAmount}>{formatCurrency(order)}</Text>
+                    </View>
+                    <View style={styles.historyDetailRow}>
+                      <Text style={styles.historyLabel}>Return Total</Text>
+                      <Text style={[styles.historyAmount, { color: '#ef4444' }]}>-{formatCurrency(retur)}</Text>
+                    </View>
+                    <View style={styles.historyDetailRow}>
+                      <Text style={styles.historyLabel}>Amount Collected</Text>
+                      <Text style={[styles.historyAmount, { color: '#10b981' }]}>{formatCurrency(tagihan)}</Text>
+                    </View>
+                    
+                    <View style={[styles.historyDetailRow, { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#f1f5f9' }]}>
+                      <Text style={[styles.historyLabel, { fontWeight: '700', color: '#1e293b' }]}>NET SALES</Text>
+                      <Text style={[styles.historyAmount, { fontWeight: '900', color: netSales >= 0 ? '#059669' : '#e53e3e', fontSize: 16 }]}>
+                        {formatCurrency(netSales)}
+                      </Text>
+                    </View>
                   </View>
 
                   {v.attachments && v.attachments.length > 0 && (
@@ -665,140 +683,6 @@ export default function StoreDetailScreen() {
             })}
           </View>
         )}
-
-        <Modal
-          visible={!!editingVisit}
-          transparent={true}
-          animationType="slide"
-          onRequestClose={handleCloseEdit}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Edit Transaction</Text>
-
-              <ScrollView style={{ maxHeight: 400 }}>
-                <View style={styles.inputContainer}>
-                  <Text style={styles.label}>Order Items</Text>
-                  <View style={styles.itemList}>
-                    {editOrderItems.map(item => (
-                      <View key={item.product_id} style={styles.itemRow}>
-                        <Text style={styles.itemName}>{item.name} (x{item.quantity})</Text>
-                        <TouchableOpacity onPress={() => removeItem(item.product_id, 'order')}>
-                          <Text style={styles.removeTextSmall}>Remove</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                    <TouchableOpacity
-                      style={styles.addItemBtn}
-                      onPress={() => handleOpenProductModal('order')}
-                    >
-                      <Text style={styles.addItemBtnText}>+ ADD PRODUCT</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <View style={styles.inputContainer}>
-                  <Text style={styles.label}>Return Items</Text>
-                  <View style={styles.itemList}>
-                    {editReturnItems.map(item => (
-                      <View key={item.product_id} style={styles.itemRow}>
-                        <Text style={styles.itemName}>{item.name} (x{item.quantity})</Text>
-                        <TouchableOpacity onPress={() => removeItem(item.product_id, 'retur')}>
-                          <Text style={styles.removeTextSmall}>Remove</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                    <TouchableOpacity
-                      style={styles.addItemBtn}
-                      onPress={() => handleOpenProductModal('retur')}
-                    >
-                      <Text style={styles.addItemBtnText}>+ ADD RETURN ITEM</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <View style={styles.tagihanContainer}>
-                  <Text style={styles.tagihanLabel}>Amount Collected / Tagihan</Text>
-                  <View style={styles.tagihanInputWrapper}>
-                    <Text style={styles.currencyPrefix}>Rp</Text>
-                    <TextInput
-                      style={styles.tagihanInput}
-                      value={editForm.tagihan}
-                      onChangeText={(t) => setEditForm({ ...editForm, tagihan: t })}
-                      keyboardType="numeric"
-                      placeholder="0"
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.uploadZone}>
-                  <Text style={styles.uploadTitle}>Transaction Photos</Text>
-                  <View style={styles.uploadActions}>
-                    <TouchableOpacity 
-                      style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]} 
-                      onPress={() => handleAddPhoto(true)}
-                    >
-                      <Text style={[styles.uploadBtnIcon, { color: '#fff' }]}>+</Text>
-                      <Text style={[styles.uploadBtnText, { color: '#fff' }]}>ADD NEW PHOTO</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  {editAttachments.length > 0 ? (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.uploadPreviewList}>
-                      {editAttachments.map((uri, index) => (
-                        <View key={index} style={styles.uploadPreviewItem}>
-                          <Image source={{ uri }} style={styles.uploadPreviewImage} />
-                          <TouchableOpacity 
-                            style={styles.uploadRemoveBtn}
-                            onPress={() => setEditAttachments(prev => prev.filter(u => u !== uri))}
-                          >
-                            <Text style={styles.uploadRemoveText}>×</Text>
-                          </TouchableOpacity>
-                        </View>
-                      ))}
-                    </ScrollView>
-                  ) : (
-                    <Text style={styles.uploadPlaceholder}>No new photos added yet</Text>
-                  )}
-                </View>
-
-                  {editingVisit?.attachments && editingVisit.attachments.length > 0 && (
-                    <View>
-                      <Text style={[styles.label, { fontSize: 12, marginTop: 10 }]}>Existing Photos (Tap to remove):</Text>
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }}>
-                        {editingVisit.attachments.map((att: any) => (
-                          <TouchableOpacity key={att.id} onPress={() => handleDeleteExistingAttachment(att.id)}>
-                            <Image 
-                              source={{ uri: `${SERVER_URL}${att.url}` }} 
-                              style={{ width: 60, height: 60, borderRadius: 8, marginRight: 8 }} 
-                            />
-                            <View style={{ position: 'absolute', top: 0, right: 8, backgroundColor: 'rgba(229, 62, 62, 0.8)', borderRadius: 10, width: 18, height: 18, justifyContent: 'center', alignItems: 'center' }}>
-                              <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>×</Text>
-                            </View>
-                          </TouchableOpacity>
-                        ))}
-                      </ScrollView>
-                    </View>
-                )}
-              </ScrollView>
-
-              <View style={styles.modalActions}>
-                <TouchableOpacity
-                  style={[styles.modalBtn, { backgroundColor: '#e2e8f0' }]}
-                  onPress={handleCloseEdit}
-                >
-                  <Text style={[styles.modalBtnText, { color: '#4a5568' }]}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.modalBtn, { backgroundColor: '#0066cc' }]}
-                  onPress={handleSaveEdit}
-                >
-                  <Text style={styles.modalBtnText}>Save</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
 
         {!isCheckedIn ? (
           <View style={styles.actionContainer}>
@@ -857,7 +741,12 @@ export default function StoreDetailScreen() {
               <Text style={styles.checkedInText}>✓ Checked In</Text>
             </View>
 
-            <Text style={styles.formTitle}>Visit Activity</Text>
+            <View style={styles.formHeaderRow}>
+              <Text style={styles.formTitle}>Visit Activity</Text>
+              <View style={styles.formTotals}>
+                <Text style={styles.formTotalLabel}>Current Net: <Text style={styles.formTotalValue}>{formatCurrency(Number(orderAmount) - Number(returAmount))}</Text></Text>
+              </View>
+            </View>
 
             <View style={styles.inputContainer}>
               <Text style={styles.label}>Order Items</Text>
@@ -899,40 +788,155 @@ export default function StoreDetailScreen() {
               </View>
             </View>
 
+            <View style={styles.tagihanContainer}>
+              <Text style={styles.tagihanLabel}>Amount Collected / Tagihan</Text>
+              <View style={styles.tagihanInputWrapper}>
+                <Text style={styles.currencyPrefix}>Rp</Text>
+                <TextInput
+                  style={styles.tagihanInput}
+                  placeholder="0"
+                  value={tagihanAmount}
+                  onChangeText={setTagihanAmount}
+                  keyboardType="numeric"
+                />
+              </View>
+            </View>
+
+            <View style={[styles.uploadZone, { marginTop: 20 }]}>
+              <Text style={styles.uploadTitle}>Transaction Photos</Text>
+              <View style={styles.uploadActions}>
+                <TouchableOpacity 
+                  style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]} 
+                  onPress={() => handleAddPhoto(false)}
+                >
+                  <Text style={[styles.uploadBtnIcon, { color: '#fff' }]}>+</Text>
+                  <Text style={[styles.uploadBtnText, { color: '#fff' }]}>ADD PHOTO</Text>
+                </TouchableOpacity>
+              </View>
+
+              {attachments.length > 0 ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.uploadPreviewList}>
+                  {attachments.map((uri, index) => (
+                    <View key={index} style={styles.uploadPreviewItem}>
+                      <Image source={{ uri }} style={styles.uploadPreviewImage} />
+                      <TouchableOpacity 
+                        style={styles.uploadRemoveBtn}
+                        onPress={() => removeAttachment(uri)}
+                      >
+                        <Text style={styles.uploadRemoveText}>×</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </ScrollView>
+              ) : (
+                <Text style={styles.uploadPlaceholder}>No photos added yet</Text>
+              )}
+            </View>
+
+            <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: '#48bb78', marginTop: 20 }]} onPress={handleCheckout}>
+              <Text style={styles.primaryBtnText}>CHECKOUT & SUBMIT</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Modals moved outside ScrollView for better reliability */}
+      <Modal
+        visible={!!editingVisit}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={handleCloseEdit}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Edit Transaction</Text>
+
+            <View style={styles.summaryEditRow}>
+              <View style={styles.summaryEditItem}>
+                <Text style={styles.summaryEditLabel}>ORDER TOTAL</Text>
+                <Text style={styles.summaryEditValue}>{formatCurrency(Number(editForm.order))}</Text>
+              </View>
+              <View style={styles.summaryEditItem}>
+                <Text style={styles.summaryEditLabel}>RETURN TOTAL</Text>
+                <Text style={[styles.summaryEditValue, { color: '#e53e3e' }]}>{formatCurrency(Number(editForm.retur))}</Text>
+              </View>
+            </View>
+
+            <ScrollView style={{ maxHeight: 400 }}>
+              <View style={styles.inputContainer}>
+                <Text style={styles.label}>Order Items</Text>
+                <View style={styles.itemList}>
+                  {editOrderItems.map(item => (
+                    <View key={item.product_id} style={styles.itemRow}>
+                      <Text style={styles.itemName}>{item.name} (x{item.quantity})</Text>
+                      <TouchableOpacity onPress={() => removeItem(item.product_id, 'order')}>
+                        <Text style={styles.removeTextSmall}>Remove</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  <TouchableOpacity
+                    style={styles.addItemBtn}
+                    onPress={() => handleOpenProductModal('order')}
+                  >
+                    <Text style={styles.addItemBtnText}>+ ADD PRODUCT</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.inputContainer}>
+                <Text style={styles.label}>Return Items</Text>
+                <View style={styles.itemList}>
+                  {editReturnItems.map(item => (
+                    <View key={item.product_id} style={styles.itemRow}>
+                      <Text style={styles.itemName}>{item.name} (x{item.quantity})</Text>
+                      <TouchableOpacity onPress={() => removeItem(item.product_id, 'retur')}>
+                        <Text style={styles.removeTextSmall}>Remove</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  <TouchableOpacity
+                    style={styles.addItemBtn}
+                    onPress={() => handleOpenProductModal('retur')}
+                  >
+                    <Text style={styles.addItemBtnText}>+ ADD RETURN ITEM</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
               <View style={styles.tagihanContainer}>
                 <Text style={styles.tagihanLabel}>Amount Collected / Tagihan</Text>
                 <View style={styles.tagihanInputWrapper}>
                   <Text style={styles.currencyPrefix}>Rp</Text>
                   <TextInput
                     style={styles.tagihanInput}
-                    placeholder="0"
-                    value={tagihanAmount}
-                    onChangeText={setTagihanAmount}
+                    value={editForm.tagihan}
+                    onChangeText={(t) => setEditForm({ ...editForm, tagihan: t })}
                     keyboardType="numeric"
+                    placeholder="0"
                   />
                 </View>
               </View>
 
-              <View style={[styles.uploadZone, { marginTop: 20 }]}>
+              <View style={styles.uploadZone}>
                 <Text style={styles.uploadTitle}>Transaction Photos</Text>
                 <View style={styles.uploadActions}>
                   <TouchableOpacity 
                     style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]} 
-                    onPress={() => handleAddPhoto(false)}
+                    onPress={() => handleAddPhoto(true)}
                   >
                     <Text style={[styles.uploadBtnIcon, { color: '#fff' }]}>+</Text>
-                    <Text style={[styles.uploadBtnText, { color: '#fff' }]}>ADD PHOTO</Text>
+                    <Text style={[styles.uploadBtnText, { color: '#fff' }]}>ADD NEW PHOTO</Text>
                   </TouchableOpacity>
                 </View>
 
-                {attachments.length > 0 ? (
+                {editAttachments.length > 0 ? (
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.uploadPreviewList}>
-                    {attachments.map((uri, index) => (
+                    {editAttachments.map((uri, index) => (
                       <View key={index} style={styles.uploadPreviewItem}>
                         <Image source={{ uri }} style={styles.uploadPreviewImage} />
                         <TouchableOpacity 
                           style={styles.uploadRemoveBtn}
-                          onPress={() => removeAttachment(uri)}
+                          onPress={() => setEditAttachments(prev => prev.filter(u => u !== uri))}
                         >
                           <Text style={styles.uploadRemoveText}>×</Text>
                         </TouchableOpacity>
@@ -940,16 +944,47 @@ export default function StoreDetailScreen() {
                     ))}
                   </ScrollView>
                 ) : (
-                  <Text style={styles.uploadPlaceholder}>No photos added yet</Text>
+                  <Text style={styles.uploadPlaceholder}>No new photos added yet</Text>
                 )}
               </View>
 
-              <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: '#48bb78', marginTop: 20 }]} onPress={handleCheckout}>
-                <Text style={styles.primaryBtnText}>CHECKOUT & SUBMIT</Text>
+              {editingVisit?.attachments && editingVisit.attachments.length > 0 && (
+                <View>
+                  <Text style={[styles.label, { fontSize: 12, marginTop: 10 }]}>Existing Photos (Tap to remove):</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }}>
+                    {editingVisit.attachments.map((att: any) => (
+                      <TouchableOpacity key={att.id} onPress={() => handleDeleteExistingAttachment(att.id)}>
+                        <Image 
+                          source={{ uri: `${SERVER_URL}${att.url}` }} 
+                          style={{ width: 60, height: 60, borderRadius: 8, marginRight: 8 }} 
+                        />
+                        <View style={{ position: 'absolute', top: 0, right: 8, backgroundColor: 'rgba(229, 62, 62, 0.8)', borderRadius: 10, width: 18, height: 18, justifyContent: 'center', alignItems: 'center' }}>
+                          <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>×</Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </ScrollView>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: '#e2e8f0' }]}
+                onPress={handleCloseEdit}
+              >
+                <Text style={[styles.modalBtnText, { color: '#4a5568' }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: '#0066cc' }]}
+                onPress={handleSaveEdit}
+              >
+                <Text style={styles.modalBtnText}>Save</Text>
               </TouchableOpacity>
             </View>
-        )}
-      </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* Product Selection Modal */}
       <Modal
@@ -1237,9 +1272,18 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   infoValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#2d3748',
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#1e293b',
+  },
+  historyDetails: {
+    marginTop: 4,
+  },
+  historyDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
   },
   actionContainer: {
     backgroundColor: '#fff',
@@ -1408,14 +1452,18 @@ const styles = StyleSheet.create({
     color: '#2d3748',
   },
   paymentBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    minWidth: 90,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   paymentBadgeText: {
     color: '#fff',
     fontSize: 10,
     fontWeight: 'bold',
+    textTransform: 'uppercase',
   },
   modalOverlay: {
     flex: 1,
@@ -1594,5 +1642,88 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: 'bold',
     color: '#0066cc',
+  },
+  summaryEditRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#f7fafc',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  summaryEditItem: {
+    flex: 1,
+  },
+  summaryEditLabel: {
+    fontSize: 10,
+    color: '#718096',
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  summaryEditValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#2d3748',
+  },
+  formHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  formTotals: {
+    alignItems: 'flex-end',
+  },
+  formTotalLabel: {
+    fontSize: 12,
+    color: '#718096',
+  },
+  formTotalValue: {
+    fontWeight: 'bold',
+    color: '#2d3748',
+  },
+  editLink: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#0066cc',
+  },
+  updatedText: {
+    fontSize: 10,
+    color: '#718096',
+    fontStyle: 'italic',
+  },
+  auditLog: {
+    backgroundColor: '#f8fafc',
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#cbd5e0',
+  },
+  auditTitle: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#4a5568',
+    marginBottom: 4,
+  },
+  auditRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  auditTime: {
+    fontSize: 9,
+    color: '#718096',
+  },
+  auditChange: {
+    fontSize: 9,
+    color: '#2d3748',
+  },
+  historyDivider: {
+    height: 1,
+    backgroundColor: '#edf2f7',
+    marginVertical: 10,
   },
 });

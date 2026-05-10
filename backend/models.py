@@ -23,6 +23,8 @@ class Store(Base):
     historicalRetur = Column(Float, default=0)
     outstanding = Column(Float, default=0)
     salesmanId = Column(String) # For now, simple string link
+    first_visit_date = Column(String, nullable=True)
+    last_visited_date = Column(String, nullable=True)
     
     attachments = relationship("Attachment", back_populates="store", cascade="all, delete-orphan")
 
@@ -51,10 +53,26 @@ class Visit(Base):
     attachment_url = Column(String, nullable=True)
     dueDate = Column(String, nullable=True)
     paymentStatus = Column(String, nullable=True)
+    updated_at = Column(String, nullable=True)
 
     items = relationship("VisitItem", back_populates="visit", cascade="all, delete-orphan")
     returns = relationship("VisitReturn", back_populates="visit", cascade="all, delete-orphan")
     attachments = relationship("Attachment", back_populates="visit", cascade="all, delete-orphan")
+    history = relationship("VisitHistory", back_populates="visit", cascade="all, delete-orphan")
+
+class VisitHistory(Base):
+    __tablename__ = "visit_history"
+    id = Column(Integer, primary_key=True, index=True)
+    visit_id = Column(String, ForeignKey("visits.id"))
+    change_time = Column(String)
+    old_order = Column(Float)
+    new_order = Column(Float)
+    old_retur = Column(Float)
+    new_retur = Column(Float)
+    old_tagihan = Column(Float)
+    new_tagihan = Column(Float)
+    
+    visit = relationship("Visit", back_populates="history")
 
 
 class Attachment(Base):

@@ -84,6 +84,8 @@ export default function StoresPage() {
               <TableCell sx={{ color: '#fff', fontWeight: 'bold' }}>Outstanding</TableCell>
               <TableCell sx={{ color: '#fff', fontWeight: 'bold' }}>Hist. Sales</TableCell>
               <TableCell sx={{ color: '#fff', fontWeight: 'bold' }}>Hist. Retur</TableCell>
+              <TableCell sx={{ color: '#fff', fontWeight: 'bold' }}>First Visit</TableCell>
+              <TableCell sx={{ color: '#fff', fontWeight: 'bold' }}>Last Visited</TableCell>
               <TableCell sx={{ color: '#fff', fontWeight: 'bold' }}>Status</TableCell>
               <TableCell sx={{ color: '#fff', fontWeight: 'bold' }} align="center">Actions</TableCell>
             </TableRow>
@@ -121,6 +123,12 @@ export default function StoresPage() {
                 </TableCell>
                 <TableCell>{formatCurrency(s.historicalSales)}</TableCell>
                 <TableCell>{formatCurrency(s.historicalRetur)}</TableCell>
+                <TableCell variant="caption" sx={{ color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {s.first_visit_date ? new Date(s.first_visit_date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: '2-digit' }) : '-'}
+                </TableCell>
+                <TableCell variant="caption" sx={{ color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {s.last_visited_date ? new Date(s.last_visited_date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: '2-digit' }) : '-'}
+                </TableCell>
                 <TableCell>
                   {s.outstanding > 0 ? (
                     <Chip label="Has Balance" color="error" variant="outlined" size="small" />

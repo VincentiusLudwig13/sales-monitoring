@@ -175,3 +175,5 @@ setup_backup.py
 scratch/check_deploy.py
 scratch/check_remote.py
 scratch/test_ssh.py
+backend/run_vps_migration.py
+analyze_tags.py
