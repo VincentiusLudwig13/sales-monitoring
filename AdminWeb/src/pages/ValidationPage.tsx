@@ -8,7 +8,7 @@ import {
 import { 
   Check as ApproveIcon, PhotoCamera as PhotoIcon, Close as RejectIcon, 
   MoreHoriz as MoreHorizIcon, Close as CloseIcon, Inventory as InventoryIcon,
-  AssignmentReturn as ReturnIcon
+  AssignmentReturn as ReturnIcon, MoreVert as MoreVertIcon
 } from '@mui/icons-material';
 import { 
   Dialog, DialogTitle, DialogContent, DialogActions, Grid 
@@ -26,6 +26,11 @@ export default function ValidationPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<Message | null>(null);
   const [viewVisit, setViewVisit] = useState<Visit | null>(null);
+  const [viewAttachments, setViewAttachments] = useState<Visit | null>(null);
+
+  const handleOpenAttachments = (visit: Visit) => {
+    setViewAttachments(visit);
+  };
 
 
   const fetchVisits = async () => {
@@ -166,18 +171,15 @@ export default function ValidationPage() {
                         </Typography>
                       </Box>
                     </TableCell>
-                    <TableCell>
-                      {v.attachment_url ? (
-                        <Tooltip title="View Receipt">
-                          <IconButton 
-                            size="small" 
-                            color="primary" 
-                            href={`${v.attachment_url}`} 
-                            target="_blank"
-                          >
-                            <PhotoIcon />
-                          </IconButton>
-                        </Tooltip>
+                    <TableCell align="center">
+                      {(v as any).attachments && (v as any).attachments.length > 0 ? (
+                        <IconButton 
+                          size="small" 
+                          color="primary"
+                          onClick={() => handleOpenAttachments(v)}
+                        >
+                          <MoreVertIcon />
+                        </IconButton>
                       ) : (
                         <Typography variant="caption" color="textSecondary">None</Typography>
                       )}
@@ -296,10 +298,94 @@ export default function ValidationPage() {
                     <Typography color="textSecondary" sx={{ fontStyle: 'italic' }}>No return items</Typography>
                 )}
             </Grid>
+            <Grid item xs={12} sx={{ p: 3, bgcolor: 'grey.50', borderTop: '1px solid #eee' }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                Attachments & Photos ({(viewVisit as any)?.attachments?.length || 0})
+              </Typography>
+              {(viewVisit as any)?.attachments && (viewVisit as any).attachments.length > 0 ? (
+                <Box sx={{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
+                  {(viewVisit as any).attachments.map((att: any, idx: number) => (
+                    <Box 
+                      key={idx} 
+                      component="img"
+                      src={att.url}
+                      sx={{ 
+                        width: 150, 
+                        height: 150, 
+                        objectFit: 'cover', 
+                        borderRadius: 2, 
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                        cursor: 'pointer',
+                        transition: 'transform 0.2s',
+                        '&:hover': { transform: 'scale(1.05)' }
+                      }}
+                      onClick={() => window.open(att.url, '_blank')}
+                    />
+                  ))}
+                </Box>
+              ) : (
+                <Typography variant="body2" color="textSecondary">No attachments found.</Typography>
+              )}
+            </Grid>
           </Grid>
         </DialogContent>
         <DialogActions sx={{ p: 2, borderTop: '1px solid #eee' }}>
           <Button onClick={() => setViewVisit(null)} variant="contained" sx={{ borderRadius: 2 }}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Attachments List Modal */}
+      <Dialog
+        open={!!viewAttachments}
+        onClose={() => setViewAttachments(null)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}
+      >
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="h6" sx={{ fontWeight: 'bold' }}>Visit Attachments</Typography>
+          <IconButton onClick={() => setViewAttachments(null)} size="small">
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ pb: 4 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {(viewAttachments as any)?.attachments?.map((att: any, idx: number) => (
+              <Paper 
+                key={idx} 
+                elevation={0} 
+                sx={{ 
+                  p: 2, 
+                  bgcolor: 'grey.50', 
+                  borderRadius: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 2,
+                  border: '1px solid #eee',
+                  cursor: 'pointer',
+                  '&:hover': { bgcolor: 'grey.100' }
+                }}
+                onClick={() => window.open(att.url, '_blank')}
+              >
+                <Box 
+                  component="img"
+                  src={att.url}
+                  sx={{ width: 80, height: 80, borderRadius: 1, objectFit: 'cover' }}
+                />
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>Attachment #{idx + 1}</Typography>
+                  <Typography variant="caption" color="textSecondary">Click to view full size</Typography>
+                </Box>
+                <PhotoIcon color="action" />
+              </Paper>
+            ))}
+            {(!viewAttachments as any)?.attachments?.length && (
+              <Typography align="center" color="textSecondary">No attachments available.</Typography>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, borderTop: '1px solid #eee' }}>
+          <Button onClick={() => setViewAttachments(null)} variant="contained" sx={{ borderRadius: 2 }}>Close</Button>
         </DialogActions>
       </Dialog>
     </Box>

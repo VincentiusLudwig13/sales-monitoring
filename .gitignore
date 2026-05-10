@@ -169,3 +169,9 @@ SalesMonitoring/ios/
 SalesMonitoring/build.txt
 SalesMonitoring/build_log.txt
 SalesMonitoring/.env
+deploy_v2.py
+run_deploy.bat
+setup_backup.py
+scratch/check_deploy.py
+scratch/check_remote.py
+scratch/test_ssh.py

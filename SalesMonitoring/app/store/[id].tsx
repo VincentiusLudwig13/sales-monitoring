@@ -17,7 +17,7 @@ try {
 } catch (e) {
   // react-native-maps not available (e.g. Expo Go)
 }
-import { getStores, saveVisit, getVisitsByStore, updateVisit, getProducts, API_BASE_URL, SERVER_URL } from '../../utils/storage';
+import { getStores, saveVisit, getVisitsByStore, updateVisit, getProducts, deleteAttachment, API_BASE_URL, SERVER_URL } from '../../utils/storage';
 import { getDistanceInMeters } from '../../utils/location';
 import { useAuth } from '../../context/AuthContext';
 import { StatusBar } from 'expo-status-bar';
@@ -57,6 +57,8 @@ export default function StoreDetailScreen() {
 
   // Attachment State
   const [attachments, setAttachments] = useState<string[]>([]);
+  const [editAttachments, setEditAttachments] = useState<string[]>([]);
+  const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
 
   const fetchStore = async () => {
     const stores = await getStores();
@@ -121,16 +123,41 @@ export default function StoreDetailScreen() {
     Linking.openURL(url).catch(err => Alert.alert('Error', 'Could not open Google Maps'));
   };
 
-  const pickImage = async () => {
-    let result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      quality: 0.7,
-    });
+  const handleAddPhoto = (isEdit: boolean = false) => {
+    Alert.alert(
+      'Add Photo',
+      'Select a source for your photo',
+      [
+        {
+          text: '📷 Camera',
+          onPress: async () => {
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== 'granted') return Alert.alert('Error', 'Camera permission required');
+            let result = await ImagePicker.launchCameraAsync({ allowsEditing: true, quality: 0.7 });
+            if (!result.canceled) {
+              if (isEdit) setEditAttachments(prev => [...prev, result.assets[0].uri]);
+              else setAttachments(prev => [...prev, result.assets[0].uri]);
+            }
+          }
+        },
+        {
+          text: '🖼️ Gallery',
+          onPress: async () => {
+            let result = await ImagePicker.launchImageLibraryAsync({ allowsMultipleSelection: true, quality: 0.7 });
+            if (!result.canceled) {
+              const uris = result.assets.map(a => a.uri);
+              if (isEdit) setEditAttachments(prev => [...prev, ...uris]);
+              else setAttachments(prev => [...prev, ...uris]);
+            }
+          }
+        },
+        { text: 'Cancel', style: 'cancel' }
+      ]
+    );
+  };
 
-    if (!result.canceled) {
-      setAttachments(prev => [...prev, result.assets[0].uri]);
-    }
+  const removeAttachment = (uri: string) => {
+    setAttachments(prev => prev.filter(u => u !== uri));
   };
 
   const handleCheckout = async () => {
@@ -175,6 +202,7 @@ export default function StoreDetailScreen() {
     setEditingVisit(v);
     setEditOrderItems(v.items || []);
     setEditReturnItems(v.returns || []);
+    setEditAttachments([]); // Start with empty for "new" attachments, or we can list existing
     setEditForm({
       order: String(v.orderAmount),
       retur: String(v.returAmount),
@@ -186,6 +214,7 @@ export default function StoreDetailScreen() {
     setEditingVisit(null);
     setEditOrderItems([]);
     setEditReturnItems([]);
+    setEditAttachments([]);
   };
 
   const handleSaveEdit = async () => {
@@ -205,12 +234,11 @@ export default function StoreDetailScreen() {
       items: editOrderItems,
       returns: editReturnItems
     };
-    const success = await updateVisit(editingVisit.id, updated);
+    const success = await updateVisit(editingVisit.id, updated, editAttachments);
     if (success) {
       Alert.alert('Success', 'Transaction updated!');
       setEditingVisit(null);
-      setOrderItems([]);
-      setReturnItems([]);
+      setEditAttachments([]);
       fetchStore();
     } else {
       Alert.alert('Error', 'Failed to update transaction.');
@@ -239,6 +267,33 @@ export default function StoreDetailScreen() {
       ...prev,
       [productId]: Math.max(0, (prev[productId] || 0) + delta)
     }));
+  };
+
+  const handleDeleteExistingAttachment = (attId: number) => {
+    Alert.alert(
+      'Delete Photo',
+      'Are you sure you want to permanently delete this photo?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive',
+          onPress: async () => {
+            const success = await deleteAttachment(attId);
+            if (success) {
+              setEditingVisit((prev: any) => ({
+                ...prev,
+                attachments: prev.attachments.filter((a: any) => a.id !== attId)
+              }));
+              // Refresh visit history in background
+              fetchStore();
+            } else {
+              Alert.alert('Error', 'Failed to delete photo.');
+            }
+          }
+        }
+      ]
+    );
   };
 
   const handleApplyBulkSelection = () => {
@@ -405,7 +460,7 @@ export default function StoreDetailScreen() {
       <body>
         <div id="map"></div>
         <script>
-          const map = L.map('map', { zoomControl: false }).setView([${store.lat}, ${store.lon}], 17);
+          const map = L.map('map', { zoomControl: false }).setView([${store.lat}, ${store.lon}], 18);
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap'
           }).addTo(map);
@@ -437,9 +492,17 @@ export default function StoreDetailScreen() {
             L.marker([${userLat || 0}, ${userLon || 0}], { icon: userIcon }).addTo(map)
               .bindPopup('You are here');
             
-            // Adjust view to show both if distance is reasonable
-            const bounds = L.latLngBounds([[${store.lat}, ${store.lon}], [${userLat || 0}, ${userLon || 0}]]);
-            map.fitBounds(bounds, { padding: [30, 30] });
+            // Fit to show both user and store, including a bit of the radius
+            const bounds = L.latLngBounds([
+              [${store.lat}, ${store.lon}], 
+              [${userLat || 0}, ${userLon || 0}]
+            ]);
+            // Also pad bounds with radius points to ensure circle is visible
+            const radiusDeg = ${CHECKIN_RADIUS} / 111320; // rough estimate
+            bounds.extend([${store.lat} + radiusDeg, ${store.lon} + radiusDeg]);
+            bounds.extend([${store.lat} - radiusDeg, ${store.lon} - radiusDeg]);
+
+            map.fitBounds(bounds, { padding: [20, 20], maxZoom: 20 });
           }
         </script>
       </body>
@@ -477,7 +540,25 @@ export default function StoreDetailScreen() {
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* Store Photo */}
-        {store.photo_url && (
+        {/* Store Photos Gallery */}
+        {store.photos && Array.isArray(store.photos) && store.photos.length > 0 && (
+          <View style={styles.photoContainer}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }}>
+              {store.photos.map((p: any) => (
+                <TouchableOpacity key={p.id} onPress={() => setFullScreenImage(`${SERVER_URL}${p.url}`)}>
+                  <Image
+                    source={{ uri: `${SERVER_URL}${p.url}` }}
+                    style={[styles.storeImage, { width: 300, marginRight: 10 }]}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+        
+        {/* Fallback for legacy single photo */}
+        {!store.photos && store.photo_url && (
           <View style={styles.photoContainer}>
             <Image
               source={{ uri: `${SERVER_URL}${store.photo_url}` }}
@@ -563,14 +644,20 @@ export default function StoreDetailScreen() {
                     </Text>
                   </View>
 
-                  {v.attachment_url && (
+                  {v.attachments && v.attachments.length > 0 && (
                     <View style={{ marginTop: 10, borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 8 }}>
-                      <Text style={[styles.historyLabel, { marginBottom: 4 }]}>📷 Attachment</Text>
-                      <Image 
-                        source={{ uri: `${SERVER_URL}${v.attachment_url}` }} 
-                        style={{ width: '100%', height: 150, borderRadius: 8, backgroundColor: '#f7fafc' }}
-                        resizeMode="cover"
-                      />
+                      <Text style={[styles.historyLabel, { marginBottom: 8 }]}>📷 Attachments ({v.attachments.length})</Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }}>
+                        {v.attachments.map((att: any) => (
+                          <TouchableOpacity key={att.id} onPress={() => setFullScreenImage(`${SERVER_URL}${att.url}`)}>
+                            <Image 
+                              source={{ uri: `${SERVER_URL}${att.url}` }} 
+                              style={{ width: 100, height: 100, borderRadius: 8, marginRight: 8, backgroundColor: '#f7fafc' }}
+                              resizeMode="cover"
+                            />
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
                     </View>
                   )}
                 </View>
@@ -608,7 +695,6 @@ export default function StoreDetailScreen() {
                       <Text style={styles.addItemBtnText}>+ ADD PRODUCT</Text>
                     </TouchableOpacity>
                   </View>
-                  <Text style={styles.totalText}>Total Order: {formatCurrency(Number(editForm.order))}</Text>
                 </View>
 
                 <View style={styles.inputContainer}>
@@ -629,18 +715,71 @@ export default function StoreDetailScreen() {
                       <Text style={styles.addItemBtnText}>+ ADD RETURN ITEM</Text>
                     </TouchableOpacity>
                   </View>
-                  <Text style={styles.totalText}>Total Return: {formatCurrency(Number(editForm.retur))}</Text>
                 </View>
 
-                <View style={styles.inputContainer}>
-                  <Text style={styles.label}>Tagihan / Collection</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={editForm.tagihan}
-                    onChangeText={(t) => setEditForm({ ...editForm, tagihan: t })}
-                    keyboardType="numeric"
-                  />
+                <View style={styles.tagihanContainer}>
+                  <Text style={styles.tagihanLabel}>Amount Collected / Tagihan</Text>
+                  <View style={styles.tagihanInputWrapper}>
+                    <Text style={styles.currencyPrefix}>Rp</Text>
+                    <TextInput
+                      style={styles.tagihanInput}
+                      value={editForm.tagihan}
+                      onChangeText={(t) => setEditForm({ ...editForm, tagihan: t })}
+                      keyboardType="numeric"
+                      placeholder="0"
+                    />
+                  </View>
                 </View>
+
+                <View style={styles.uploadZone}>
+                  <Text style={styles.uploadTitle}>Transaction Photos</Text>
+                  <View style={styles.uploadActions}>
+                    <TouchableOpacity 
+                      style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]} 
+                      onPress={() => handleAddPhoto(true)}
+                    >
+                      <Text style={[styles.uploadBtnIcon, { color: '#fff' }]}>+</Text>
+                      <Text style={[styles.uploadBtnText, { color: '#fff' }]}>ADD NEW PHOTO</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {editAttachments.length > 0 ? (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.uploadPreviewList}>
+                      {editAttachments.map((uri, index) => (
+                        <View key={index} style={styles.uploadPreviewItem}>
+                          <Image source={{ uri }} style={styles.uploadPreviewImage} />
+                          <TouchableOpacity 
+                            style={styles.uploadRemoveBtn}
+                            onPress={() => setEditAttachments(prev => prev.filter(u => u !== uri))}
+                          >
+                            <Text style={styles.uploadRemoveText}>×</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  ) : (
+                    <Text style={styles.uploadPlaceholder}>No new photos added yet</Text>
+                  )}
+                </View>
+
+                  {editingVisit?.attachments && editingVisit.attachments.length > 0 && (
+                    <View>
+                      <Text style={[styles.label, { fontSize: 12, marginTop: 10 }]}>Existing Photos (Tap to remove):</Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }}>
+                        {editingVisit.attachments.map((att: any) => (
+                          <TouchableOpacity key={att.id} onPress={() => handleDeleteExistingAttachment(att.id)}>
+                            <Image 
+                              source={{ uri: `${SERVER_URL}${att.url}` }} 
+                              style={{ width: 60, height: 60, borderRadius: 8, marginRight: 8 }} 
+                            />
+                            <View style={{ position: 'absolute', top: 0, right: 8, backgroundColor: 'rgba(229, 62, 62, 0.8)', borderRadius: 10, width: 18, height: 18, justifyContent: 'center', alignItems: 'center' }}>
+                              <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>×</Text>
+                            </View>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+                )}
               </ScrollView>
 
               <View style={styles.modalActions}>
@@ -738,7 +877,6 @@ export default function StoreDetailScreen() {
                   <Text style={styles.addItemBtnText}>+ MANAGE ORDER ITEMS</Text>
                 </TouchableOpacity>
               </View>
-              <Text style={styles.totalText}>Total Order: {formatCurrency(Number(orderAmount))}</Text>
             </View>
 
             <View style={styles.inputContainer}>
@@ -759,39 +897,57 @@ export default function StoreDetailScreen() {
                   <Text style={styles.addItemBtnText}>+ MANAGE RETURN ITEMS</Text>
                 </TouchableOpacity>
               </View>
-              <Text style={styles.totalText}>Total Return: {formatCurrency(Number(returAmount))}</Text>
             </View>
 
-            <View style={styles.checkoutForm}>
-              <Text style={styles.formTitle}>Visit Checkout</Text>
-              
-              <View style={styles.summaryBox}>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Order Total:</Text>
-                  <Text style={styles.summaryValue}>Rp {orderItems.reduce((sum, i) => sum + (i.quantity * i.price), 0).toLocaleString()}</Text>
-                </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Return Total:</Text>
-                  <Text style={[styles.summaryValue, { color: '#e74c3c' }]}>Rp {returnItems.reduce((sum, i) => sum + (i.quantity * (products.find(p => p.id === i.product_id)?.price || 0)), 0).toLocaleString()}</Text>
+              <View style={styles.tagihanContainer}>
+                <Text style={styles.tagihanLabel}>Amount Collected / Tagihan</Text>
+                <View style={styles.tagihanInputWrapper}>
+                  <Text style={styles.currencyPrefix}>Rp</Text>
+                  <TextInput
+                    style={styles.tagihanInput}
+                    placeholder="0"
+                    value={tagihanAmount}
+                    onChangeText={setTagihanAmount}
+                    keyboardType="numeric"
+                  />
                 </View>
               </View>
 
-              <Text style={styles.inputLabel}>Tagihan Amount (Rp)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Amount collected..."
-                value={tagihanAmount}
-                onChangeText={setTagihanAmount}
-                keyboardType="numeric"
-              />
+              <View style={[styles.uploadZone, { marginTop: 20 }]}>
+                <Text style={styles.uploadTitle}>Transaction Photos</Text>
+                <View style={styles.uploadActions}>
+                  <TouchableOpacity 
+                    style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]} 
+                    onPress={() => handleAddPhoto(false)}
+                  >
+                    <Text style={[styles.uploadBtnIcon, { color: '#fff' }]}>+</Text>
+                    <Text style={[styles.uploadBtnText, { color: '#fff' }]}>ADD PHOTO</Text>
+                  </TouchableOpacity>
                 </View>
-              )}
-            </View>
 
-            <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: '#48bb78' }]} onPress={handleCheckout}>
-              <Text style={styles.primaryBtnText}>CHECKOUT & SUBMIT</Text>
-            </TouchableOpacity>
-          </View>
+                {attachments.length > 0 ? (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.uploadPreviewList}>
+                    {attachments.map((uri, index) => (
+                      <View key={index} style={styles.uploadPreviewItem}>
+                        <Image source={{ uri }} style={styles.uploadPreviewImage} />
+                        <TouchableOpacity 
+                          style={styles.uploadRemoveBtn}
+                          onPress={() => removeAttachment(uri)}
+                        >
+                          <Text style={styles.uploadRemoveText}>×</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </ScrollView>
+                ) : (
+                  <Text style={styles.uploadPlaceholder}>No photos added yet</Text>
+                )}
+              </View>
+
+              <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: '#48bb78', marginTop: 20 }]} onPress={handleCheckout}>
+                <Text style={styles.primaryBtnText}>CHECKOUT & SUBMIT</Text>
+              </TouchableOpacity>
+            </View>
         )}
       </ScrollView>
 
@@ -851,6 +1007,30 @@ export default function StoreDetailScreen() {
               </TouchableOpacity>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* Full Screen Image Viewer */}
+      <Modal
+        visible={!!fullScreenImage}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setFullScreenImage(null)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' }}>
+          <TouchableOpacity 
+            style={{ position: 'absolute', top: 50, right: 20, zIndex: 10, padding: 10 }}
+            onPress={() => setFullScreenImage(null)}
+          >
+            <Text style={{ color: 'white', fontSize: 40, fontWeight: '200' }}>×</Text>
+          </TouchableOpacity>
+          {fullScreenImage && (
+            <Image 
+              source={{ uri: fullScreenImage }} 
+              style={{ width: '100%', height: '80%' }}
+              resizeMode="contain"
+            />
+          )}
         </View>
       </Modal>
     </KeyboardAvoidingView>
@@ -1269,6 +1449,131 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 8,
+  },
+  tagihanContainer: {
+    backgroundColor: '#ebf8ff',
+    borderRadius: 16,
+    padding: 20,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#bee3f8',
+  },
+  tagihanLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#2b6cb0',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  tagihanInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#3182ce',
+    paddingHorizontal: 16,
+  },
+  currencyPrefix: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2b6cb0',
+    marginRight: 8,
+  },
+  tagihanInput: {
+    flex: 1,
+    height: 54,
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#2d3748',
+  },
+  uploadZone: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    borderStyle: 'dashed',
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 16,
+  },
+  uploadTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#64748b',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  uploadActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  uploadBtn: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#cbd5e0',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  uploadBtnIcon: {
+    fontSize: 18,
+  },
+  uploadBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  uploadPlaceholder: {
+    textAlign: 'center',
+    color: '#94a3b8',
+    fontSize: 13,
+    fontStyle: 'italic',
+    paddingVertical: 10,
+  },
+  uploadPreviewList: {
+    flexDirection: 'row',
+  },
+  uploadPreviewItem: {
+    marginRight: 12,
+    position: 'relative',
+  },
+  uploadPreviewImage: {
+    width: 70,
+    height: 70,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  uploadRemoveBtn: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: '#ef4444',
+    borderRadius: 10,
+    width: 22,
+    height: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  uploadRemoveText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+    lineHeight: 18,
   },
   modalBtnText: {
     color: '#fff',

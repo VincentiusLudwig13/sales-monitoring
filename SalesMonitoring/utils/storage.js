@@ -121,8 +121,10 @@ export const registerStore = async (name, lat, lon, photoUris = [], salesmanId) 
     form.append('lon', String(lon));
     form.append('salesmanId', salesmanId ? String(salesmanId) : 'unknown');
 
-    if (photoUris && photoUris.length > 0) {
-      photoUris.forEach((uri) => {
+    const photosArray = Array.isArray(photoUris) ? photoUris : (photoUris ? [photoUris] : []);
+
+    if (photosArray.length > 0) {
+      photosArray.forEach((uri) => {
         const filename = uri.split('/').pop();
         const ext = filename.split('.').pop();
         form.append('photos', {
@@ -186,21 +188,53 @@ export const updateStore = async (storeId, storeData, newPhotoUris = []) => {
   }
 };
 
-export const updateVisit = async (visitId, visitData) => {
+export const updateVisit = async (visitId, visitData, newAttachments = []) => {
   try {
+    const form = new FormData();
+    if (visitData.orderAmount !== undefined) form.append('orderAmount', String(visitData.orderAmount));
+    if (visitData.returAmount !== undefined) form.append('returAmount', String(visitData.returAmount));
+    if (visitData.tagihanAmount !== undefined) form.append('tagihanAmount', String(visitData.tagihanAmount));
+    if (visitData.paymentStatus !== undefined) form.append('paymentStatus', visitData.paymentStatus);
+    if (visitData.items) form.append('items', JSON.stringify(visitData.items));
+    if (visitData.returns) form.append('returns', JSON.stringify(visitData.returns));
+
+    if (newAttachments && newAttachments.length > 0) {
+      newAttachments.forEach((uri) => {
+        const filename = uri.split('/').pop();
+        const ext = filename.split('.').pop();
+        form.append('new_attachments', {
+          uri: uri,
+          name: filename,
+          type: `image/${ext}`,
+        });
+      });
+    }
+
     const response = await fetch(`${API_BASE_URL}/visits/${visitId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(visitData)
+      body: form,
     });
 
     if (!response.ok) {
-      console.error('Failed to update visit on backend');
+      const errorText = await response.text();
+      console.error('Failed to update visit on backend:', errorText);
       return false;
     }
     return true;
   } catch (e) {
     console.error('Update visit error:', e);
+    return false;
+  }
+};
+
+export const deleteAttachment = async (id) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/attachments/${id}`, {
+      method: 'DELETE',
+    });
+    return response.ok;
+  } catch (e) {
+    console.error('Delete attachment error:', e);
     return false;
   }
 };

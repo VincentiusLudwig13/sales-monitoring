@@ -157,7 +157,19 @@ async def create_store(
     
     db_store.photo_url = main_photo_url
     db.commit()
-    return {"status": "success", "store": db_store}
+    db.refresh(db_store)
+
+    return {
+        "status": "success", 
+        "store": {
+            "id": db_store.id,
+            "name": db_store.name,
+            "lat": db_store.lat,
+            "lon": db_store.lon,
+            "salesmanId": db_store.salesmanId,
+            "photos": [{"id": p.id, "url": p.url} for p in db_store.attachments]
+        }
+    }
 
 @app.put("/api/stores/{id}")
 async def update_store(
@@ -439,29 +451,56 @@ async def update_visit(
     db.commit()
     return {"status": "success"}
 
+@app.delete("/api/attachments/{id}")
+def delete_attachment(id: int, db: Session = Depends(get_db)):
+    att = db.query(models.Attachment).filter(models.Attachment.id == id).first()
+    if att:
+        # Delete file from disk
+        file_path = att.url.lstrip('/') # Remove leading / to make it a relative path
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+        db.delete(att)
+        db.commit()
+    return {"status": "success"}
+
 # --- Admin Stats ---
 @app.get("/api/stats/admin")
 def get_admin_stats(db: Session = Depends(get_db)):
     now = datetime.now()
     current_month = now.month
     current_year = now.year
-    visits = db.query(models.Visit).all()
+    
+    all_visits = db.query(models.Visit).all()
     sales_mtd = 0
     retur_mtd = 0
-    for v in visits:
+    active_store_ids = set()
+    
+    for v in all_visits:
         if v.status != "validated": continue
         try:
             visit_date = datetime.fromisoformat(v.checkInTime.replace("Z", "+00:00"))
         except:
             continue
+            
         if visit_date.month == current_month and visit_date.year == current_year:
             sales_mtd += v.orderAmount
             retur_mtd += v.returAmount
+            active_store_ids.add(v.storeId)
+            
     total_stores = db.query(models.Store).count()
+    active_stores = len(active_store_ids)
+    inactive_stores = total_stores - active_stores
+    
     total_outstanding = sum(s[0] for s in db.query(models.Store.outstanding).all())
+    
     return {
-        "sales_mtd": sales_mtd, "retur_mtd": retur_mtd,
-        "total_outstanding": total_outstanding, "total_stores": total_stores
+        "sales_mtd": sales_mtd, 
+        "retur_mtd": retur_mtd,
+        "total_outstanding": total_outstanding, 
+        "total_stores": total_stores,
+        "active_stores": active_stores,
+        "inactive_stores": inactive_stores
     }
 
 if __name__ == "__main__":

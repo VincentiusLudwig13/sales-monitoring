@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   Image, ActivityIndicator, Alert, ScrollView, Platform
 } from 'react-native';
+import { WebView } from 'react-native-webview';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
@@ -14,24 +15,103 @@ export default function RegisterStoreScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const [name, setName] = useState('');
-  const [photo, setPhoto] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<string[]>([]);
   const [coords, setCoords] = useState<{ lat: number; lon: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [userLocation, setUserLocation] = useState<Location.LocationObject | null>(null);
 
-  const pickPhoto = async () => {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission denied', 'Camera permission is required to take a photo.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ['images'],
-      quality: 0.8,
-    });
-    if (!result.canceled) {
-      setPhoto(result.assets[0].uri);
-    }
+  React.useEffect(() => {
+    let watcher: Location.LocationSubscription;
+    const startWatching = async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') {
+        watcher = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, distanceInterval: 5 },
+          (loc) => setUserLocation(loc)
+        );
+      }
+    };
+    startWatching();
+    return () => watcher?.remove();
+  }, []);
+
+  const getLeafletHTML = () => {
+    if (!coords) return '';
+    const userLat = userLocation?.coords.latitude;
+    const userLon = userLocation?.coords.longitude;
+
+    return `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+          <style>
+            #map { height: 100vh; width: 100vw; margin: 0; padding: 0; }
+            .leaflet-control-attribution { display: none; }
+            .user-location-dot {
+              width: 12px;
+              height: 12px;
+              background-color: #007bff;
+              border: 2px solid white;
+              border-radius: 50%;
+              box-shadow: 0 0 5px rgba(0,0,0,0.3);
+            }
+          </style>
+        </head>
+        <body>
+          <div id="map"></div>
+          <script>
+            var map = L.map('map', {zoomControl: false}).setView([${coords.lat}, ${coords.lon}], 18);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            
+            // Tagged Marker
+            L.marker([${coords.lat}, ${coords.lon}]).addTo(map).bindPopup('Store Location').openPopup();
+
+            // User Live Location Dot
+            if (${!!userLat && !!userLon}) {
+              var userIcon = L.divIcon({
+                className: 'user-location-dot',
+                iconSize: [12, 12],
+                iconAnchor: [6, 6]
+              });
+              L.marker([${userLat || 0}, ${userLon || 0}], { icon: userIcon }).addTo(map);
+              
+              // Fit to show both
+              var bounds = L.latLngBounds([[${coords.lat}, ${coords.lon}], [${userLat || 0}, ${userLon || 0}]]);
+              map.fitBounds(bounds, { padding: [20, 20], maxZoom: 20 });
+            }
+          </script>
+        </body>
+      </html>
+    `;
+  };
+
+  const handleAddPhoto = () => {
+    Alert.alert(
+      'Add Store Photo',
+      'Select a source for your store photo',
+      [
+        {
+          text: '📷 Camera',
+          onPress: async () => {
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== 'granted') return Alert.alert('Error', 'Camera permission required');
+            let result = await ImagePicker.launchCameraAsync({ quality: 0.7 });
+            if (!result.canceled) setPhotos(prev => [...prev, result.assets[0].uri]);
+          }
+        },
+        {
+          text: '🖼️ Gallery',
+          onPress: async () => {
+            let result = await ImagePicker.launchImageLibraryAsync({ allowsMultipleSelection: true, quality: 0.7 });
+            if (!result.canceled) setPhotos(prev => [...prev, ...result.assets.map(a => a.uri)]);
+          }
+        },
+        { text: 'Cancel', style: 'cancel' }
+      ]
+    );
   };
 
   const fetchLocation = async () => {
@@ -53,8 +133,8 @@ export default function RegisterStoreScreen() {
       setErrorMsg('Please enter a store name.');
       return;
     }
-    if (!photo) {
-      setErrorMsg('Please capture a photo of the store.');
+    if (photos.length === 0) {
+      setErrorMsg('Please capture at least one photo of the store.');
       return;
     }
     if (!coords) {
@@ -63,7 +143,7 @@ export default function RegisterStoreScreen() {
     }
 
     setLoading(true);
-    const store = await registerStore(name, coords.lat, coords.lon, photo, user?.nik);
+    const store = await registerStore(name, coords.lat, coords.lon, photos, user?.nik);
     setLoading(false);
 
     if (store) {
@@ -104,30 +184,66 @@ export default function RegisterStoreScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.label}>Store Photo</Text>
-          <TouchableOpacity style={styles.actionBtn} onPress={pickPhoto}>
-            <Text style={styles.actionBtnIcon}>📷</Text>
-            <Text style={styles.actionBtnText}>
-              {photo ? 'Retake Photo' : 'Capture Photo'}
-            </Text>
-          </TouchableOpacity>
-          {photo && (
-            <Image source={{ uri: photo }} style={styles.preview} />
+          <Text style={styles.label}>Store Photos ({photos.length})</Text>
+          <View style={styles.uploadZone}>
+            <Text style={styles.uploadTitle}>Store Photos</Text>
+            <TouchableOpacity 
+              style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]} 
+              onPress={handleAddPhoto}
+            >
+              <Text style={[styles.uploadBtnIcon, { color: '#fff' }]}>+</Text>
+              <Text style={[styles.uploadBtnText, { color: '#fff' }]}>ADD STORE PHOTO</Text>
+            </TouchableOpacity>
+          </View>
+          
+          {Array.isArray(photos) && photos.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginTop: 10 }}>
+              {photos.map((uri, index) => (
+                <View key={index} style={{ marginRight: 10, position: 'relative' }}>
+                  <Image source={{ uri }} style={{ width: 100, height: 100, borderRadius: 12 }} />
+                  <TouchableOpacity 
+                    style={{ position: 'absolute', top: -5, right: -5, backgroundColor: '#e53e3e', borderRadius: 10, width: 22, height: 22, justifyContent: 'center', alignItems: 'center' }}
+                    onPress={() => setPhotos(prev => prev.filter(p => p !== uri))}
+                  >
+                    <Text style={{ color: 'white', fontSize: 14, fontWeight: 'bold' }}>×</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
           )}
         </View>
 
         <View style={styles.section}>
           <Text style={styles.label}>GeoTag Location</Text>
+          
+          {coords && (
+            <View style={styles.mapPreviewContainer}>
+              <WebView
+                originWhitelist={['*']}
+                source={{ html: getLeafletHTML() }}
+                style={{ flex: 1 }}
+                scrollEnabled={false}
+              />
+            </View>
+          )}
+
           <TouchableOpacity
-            style={[styles.actionBtn, coords && styles.actionBtnDone]}
+            style={[styles.geoBtn, coords && styles.geoBtnDone]}
             onPress={fetchLocation}
           >
-            <Text style={styles.actionBtnIcon}>📍</Text>
-            <Text style={styles.actionBtnText}>
-              {coords
-                ? `Location: ${coords.lat.toFixed(6)}, ${coords.lon.toFixed(6)}`
-                : 'Use Current Location'}
-            </Text>
+            <View style={styles.geoBtnContent}>
+              <Text style={styles.geoIcon}>📍</Text>
+              <View>
+                <Text style={[styles.geoText, coords && styles.geoTextDone]}>
+                  {coords ? 'Location Captured' : 'Tap to Capture GPS'}
+                </Text>
+                {coords && (
+                  <Text style={styles.geoCoords}>
+                    {coords.lat.toFixed(6)}, {coords.lon.toFixed(6)}
+                  </Text>
+                )}
+              </View>
+            </View>
           </TouchableOpacity>
         </View>
 
@@ -215,45 +331,97 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  section: {
-    marginBottom: 20,
+  uploadZone: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    borderStyle: 'dashed',
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 8,
+    marginBottom: 16,
   },
-  actionBtn: {
+  uploadTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  uploadBtn: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#cbd5e0',
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  uploadBtnIcon: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  geoBtn: {
     backgroundColor: '#fff',
     borderWidth: 2,
     borderColor: '#0066cc',
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  actionBtnDone: {
+  geoBtnDone: {
     borderColor: '#28a745',
     backgroundColor: '#f0fff4',
   },
-  actionBtnIcon: {
-    fontSize: 20,
-    marginRight: 10,
+  geoBtnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
-  actionBtnText: {
-    color: '#0066cc',
-    fontWeight: '600',
+  geoIcon: {
+    fontSize: 24,
+  },
+  geoText: {
     fontSize: 16,
+    fontWeight: '700',
+    color: '#0066cc',
   },
-  preview: {
+  geoTextDone: {
+    color: '#28a745',
+  },
+  geoCoords: {
+    fontSize: 12,
+    color: '#718096',
+    marginTop: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  mapPreviewContainer: {
     width: '100%',
-    height: 220,
-    borderRadius: 12,
-    marginTop: 12,
-    resizeMode: 'cover',
+    height: 150,
+    borderRadius: 16,
+    overflow: 'hidden',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
   submitBtn: {
     backgroundColor: '#28a745',
     borderRadius: 12,
     padding: 18,
     alignItems: 'center',
-    marginTop: 12,
+    marginTop: 24,
     shadowColor: '#28a745',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,

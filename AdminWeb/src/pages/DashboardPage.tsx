@@ -10,14 +10,16 @@ import {
 import {
   Search as SearchIcon, MoreHoriz as MoreHorizIcon, Close as CloseIcon,
   Inventory as InventoryIcon, AssignmentReturn as ReturnIcon, Payment as PaymentIcon,
-  TrendingUp, ErrorOutline, LocalShipping, Edit as EditIcon
+  TrendingUp, ErrorOutline, LocalShipping, Edit as EditIcon, MoreVert as MoreVertIcon,
+  PhotoLibrary as PhotoLibraryIcon, History as HistoryIcon
 } from '@mui/icons-material';
 import {
   getStats, getVisits, getStores, updateVisit, getUsers,
   type AdminStats, type Visit, type Store, type User
 } from '../api';
 import {
-  Tooltip as RechartsTooltip, ResponsiveContainer, Cell, PieChart, Pie
+  Tooltip as RechartsTooltip, ResponsiveContainer, Cell, PieChart, Pie,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Legend, AreaChart, Area
 } from 'recharts';
 import Avatar from '@mui/material/Avatar';
 import Divider from '@mui/material/Divider';
@@ -85,6 +87,8 @@ export default function DashboardPage() {
 
   // View Details State
   const [viewVisit, setViewVisit] = useState<Visit | null>(null);
+  const [viewAttachments, setViewAttachments] = useState<Visit | null>(null);
+  const [historySalesman, setHistorySalesman] = useState<string | null>(null);
 
   const fetchData = useCallback(() => {
     Promise.all([getStats(), getVisits(), getStores(), getUsers()]).then(([st, vi, str, usr]) => {
@@ -163,6 +167,24 @@ export default function DashboardPage() {
 
     return Object.values(performanceMap).map(p => ({ ...p, activeStoresCount: p.stores.size }));
   }, [allVisits, users]);
+  const dailyTrends = useMemo(() => {
+    const last15Days = [...Array(15)].map((_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      return d.toISOString().split('T')[0];
+    }).reverse();
+
+    return last15Days.map(date => {
+      const dayVisits = allVisits.filter(v => v.checkInTime.startsWith(date));
+      const sales = dayVisits.reduce((sum, v) => sum + (v.status === 'validated' ? (v.orderAmount || 0) : 0), 0);
+      const visits = dayVisits.length;
+      return {
+        date: new Date(date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' }),
+        sales,
+        visits
+      };
+    });
+  }, [allVisits]);
 
   if (loading || !stats) return <Box sx={{ display: 'flex', justifyContent: 'center', mt: 10 }}><CircularProgress /></Box>;
 
@@ -219,8 +241,8 @@ export default function DashboardPage() {
   };
 
   const storeData = [
-    { name: 'Active', value: stats.active_stores, color: '#38a169' },
-    { name: 'Inactive', value: stats.inactive_stores, color: '#e53e3e' },
+    { name: 'Active', value: stats.active_stores, color: '#10B981' }, // Emerald 500
+    { name: 'Inactive', value: stats.inactive_stores, color: '#F43F5E' }, // Rose 500
   ];
 
   return (
@@ -273,48 +295,78 @@ export default function DashboardPage() {
 
         {/* Charts */}
         <Grid item xs={12} md={6}>
-          <Paper sx={{ p: 3, height: 350 }}>
-            <Typography variant="h6" sx={{ mb: 2 }}>Store Activity Status</Typography>
-            <ResponsiveContainer width="100%" height="90%">
-              <PieChart>
-                <Pie
-                  data={storeData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={5}
-                  dataKey="value"
-                  label
-                >
-                  {storeData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <RechartsTooltip />
-              </PieChart>
-            </ResponsiveContainer>
+          <Paper sx={{ p: 3, height: 350, borderRadius: 4, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+            <Typography variant="h6" sx={{ mb: 1, fontWeight: 'bold', color: '#1e293b' }}>Store Activity Status</Typography>
+            <Typography variant="caption" color="textSecondary" sx={{ mb: 2 }}>Monthly active vs inactive stores</Typography>
+            
+            <Box sx={{ flexGrow: 1, position: 'relative' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={storeData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={0}
+                    dataKey="value"
+                    nameKey="name"
+                    stroke="none"
+                  >
+                    {storeData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <RechartsTooltip 
+                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              
+              {/* Central Stat */}
+              <Box sx={{ 
+                position: 'absolute', 
+                top: '50%', 
+                left: '50%', 
+                transform: 'translate(-50%, -50%)',
+                textAlign: 'center',
+                pointerEvents: 'none'
+              }}>
+                <Typography variant="h4" sx={{ fontWeight: 800, color: '#1e293b', lineHeight: 1 }}>
+                  {stats.total_stores}
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, textTransform: 'uppercase', fontSize: '10px' }}>
+                  Total Stores
+                </Typography>
+              </Box>
+            </Box>
+
+            {/* Custom Legend to ensure perfect Pie centering */}
+            <Box sx={{ display: 'flex', justifyContent: 'center', gap: 3, mt: 2 }}>
+              {storeData.map((entry, index) => (
+                <Box key={index} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Box sx={{ width: 12, height: 12, borderRadius: '3px', bgcolor: entry.color }} />
+                  <Typography variant="caption" sx={{ fontWeight: 600, color: '#475569' }}>
+                    {entry.name}: {entry.value}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
           </Paper>
         </Grid>
 
         <Grid item xs={12} md={6}>
-          <Paper sx={{ p: 3, height: 350 }}>
-            <Typography variant="h6" sx={{ mb: 2 }}>Performance Ratios</Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 2 }}>
-              <Box>
-                <Typography variant="body2" color="textSecondary">Active Stores Rate</Typography>
-                <Typography variant="h5" color="primary.main">
-                  {((stats.active_stores / (stats.total_stores || 1)) * 100).toFixed(1)}%
-                </Typography>
-              </Box>
-              <Divider />
-              <Box>
-                <Typography variant="body2" color="textSecondary">Return vs Sales Ratio</Typography>
-                <Typography variant="h5" color="warning.main">
-                  {((stats.retur_mtd / (stats.sales_mtd || 1)) * 100).toFixed(2)}%
-                </Typography>
-              </Box>
-            </Box>
+          <Paper sx={{ p: 3, height: 350, borderRadius: 4 }}>
+            <Typography variant="h6" sx={{ mb: 2, fontWeight: 'bold' }}>Sales Trend (Last 15 Days)</Typography>
+            <ResponsiveContainer width="100%" height="90%">
+              <LineChart data={dailyTrends}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="date" fontSize={10} axisLine={false} tickLine={false} />
+                <YAxis fontSize={10} axisLine={false} tickLine={false} />
+                <RechartsTooltip formatter={(val: number) => formatCurrency(val)} />
+                <Line type="monotone" dataKey="sales" stroke="#10b981" strokeWidth={3} dot={{ r: 4, fill: '#10b981' }} activeDot={{ r: 6 }} />
+              </LineChart>
+            </ResponsiveContainer>
           </Paper>
         </Grid>
 
@@ -333,6 +385,7 @@ export default function DashboardPage() {
                     <TableCell sx={{ fontWeight: 'bold' }} align="right">Gross Sales</TableCell>
                     <TableCell sx={{ fontWeight: 'bold' }} align="right">Returns</TableCell>
                     <TableCell sx={{ fontWeight: 'bold' }} align="right">Net Sales</TableCell>
+                    <TableCell sx={{ fontWeight: 'bold' }} align="center">Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -343,6 +396,13 @@ export default function DashboardPage() {
                       <TableCell align="right">{formatCurrency(sp.gross)}</TableCell>
                       <TableCell align="right" sx={{ color: 'error.main' }}>{formatCurrency(sp.retur)}</TableCell>
                       <TableCell align="right" sx={{ color: 'success.main', fontWeight: 'bold' }}>{formatCurrency(sp.net)}</TableCell>
+                      <TableCell align="center">
+                        <Tooltip title="View Visit History">
+                          <IconButton size="small" color="primary" onClick={() => setHistorySalesman(sp.id || sp.name)}>
+                            <HistoryIcon />
+                          </IconButton>
+                        </Tooltip>
+                      </TableCell>
                     </TableRow>
                   ))}
                   {salesmanPerformance.length === 0 && (
@@ -461,15 +521,29 @@ export default function DashboardPage() {
                           </TableCell>
                           <TableCell align="right">{formatCurrency(v.orderAmount)}</TableCell>
                           <TableCell align="center">
-                            <Tooltip title="View Details">
-                              <IconButton
-                                size="small"
-                                onClick={() => setViewVisit(v)}
-                                sx={{ color: 'primary.main' }}
-                              >
-                                <MoreHorizIcon />
-                              </IconButton>
-                            </Tooltip>
+                            <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
+                              <Tooltip title="View Items">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => setViewVisit(v)}
+                                  sx={{ color: 'primary.main' }}
+                                >
+                                  <MoreHorizIcon />
+                                </IconButton>
+                              </Tooltip>
+                              
+                              {(v as any).attachments?.length > 0 && (
+                                <Tooltip title="View Attachments">
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => setViewAttachments(v)}
+                                    sx={{ color: 'secondary.main' }}
+                                  >
+                                    <MoreVertIcon />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
+                            </Box>
                           </TableCell>
                           <TableCell align="center">
                             <IconButton size="small" color="primary" onClick={() => handleOpenEdit(v)}>
@@ -645,7 +719,7 @@ export default function DashboardPage() {
                             <Box 
                                 key={idx} 
                                 component="img"
-                                src={`https://sales-monitoring.duckdns.org${att.url}`}
+                                src={att.url}
                                 sx={{ 
                                     width: 150, 
                                     height: 150, 
@@ -656,7 +730,7 @@ export default function DashboardPage() {
                                     transition: 'transform 0.2s',
                                     '&:hover': { transform: 'scale(1.05)' }
                                 }}
-                                onClick={() => window.open(`https://sales-monitoring.duckdns.org${att.url}`, '_blank')}
+                                onClick={() => window.open(att.url, '_blank')}
                             />
                         ))}
                     </Box>
@@ -670,6 +744,119 @@ export default function DashboardPage() {
         <DialogActions sx={{ p: 2, borderTop: '1px solid #eee' }}>
           <Button onClick={() => setViewVisit(null)} variant="contained" sx={{ borderRadius: 2 }}>Close</Button>
         </DialogActions>
+      </Dialog>
+
+      {/* Attachments List Modal */}
+      <Dialog
+        open={!!viewAttachments}
+        onClose={() => setViewAttachments(null)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}
+      >
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="h6" sx={{ fontWeight: 'bold' }}>Visit Attachments</Typography>
+          <IconButton onClick={() => setViewAttachments(null)} size="small">
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ pb: 4 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {(viewAttachments as any)?.attachments?.map((att: any, idx: number) => (
+              <Paper 
+                key={idx} 
+                elevation={0} 
+                sx={{ 
+                  p: 2, 
+                  bgcolor: 'grey.50', 
+                  borderRadius: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 2,
+                  border: '1px solid #eee',
+                  cursor: 'pointer',
+                  '&:hover': { bgcolor: 'grey.100' }
+                }}
+                onClick={() => window.open(att.url, '_blank')}
+              >
+                <Avatar sx={{ bgcolor: 'secondary.light', color: 'secondary.main' }}>
+                  <PhotoLibraryIcon />
+                </Avatar>
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 'bold' }}>{att.filename || `Photo ${idx + 1}`}</Typography>
+                  <Typography variant="caption" color="textSecondary">Uploaded at {new Date(att.created_at).toLocaleString()}</Typography>
+                </Box>
+                <Button size="small" variant="outlined">View Full</Button>
+              </Paper>
+            ))}
+          </Box>
+        </DialogContent>
+      </Dialog>
+
+      {/* Salesman History Dialog */}
+      <Dialog
+        open={!!historySalesman}
+        onClose={() => setHistorySalesman(null)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}
+      >
+        <DialogTitle sx={{ bgcolor: 'primary.main', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="h6">Visit History: {historySalesman}</Typography>
+          <IconButton onClick={() => setHistorySalesman(null)} sx={{ color: 'white' }}><CloseIcon /></IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          <TableContainer sx={{ maxHeight: '70vh' }}>
+            <Table stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={{ fontWeight: 'bold' }}>Date</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>Store</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }} align="right">Order</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }} align="right">Return</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }} align="right">Collected</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>Status</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {allVisits
+                  .filter(v => {
+                    const salesman = users.find(u => u.name === historySalesman || u.nik === historySalesman);
+                    return v.salesmanId === historySalesman || v.salesmanId === salesman?.nik;
+                  })
+                  .sort((a, b) => new Date(b.checkInTime).getTime() - new Date(a.checkInTime).getTime())
+                  .map(v => (
+                  <TableRow key={v.id} hover>
+                    <TableCell>{new Date(v.checkInTime).toLocaleDateString()}</TableCell>
+                    <TableCell sx={{ fontWeight: '500' }}>{getStoreName(v.storeId)}</TableCell>
+                    <TableCell align="right">{formatCurrency(v.orderAmount)}</TableCell>
+                    <TableCell align="right" sx={{ color: 'error.main' }}>{formatCurrency(v.returAmount)}</TableCell>
+                    <TableCell align="right" sx={{ color: 'success.main' }}>{formatCurrency(v.tagihanAmount)}</TableCell>
+                    <TableCell>
+                      <Chip 
+                        label={v.status} 
+                        size="small" 
+                        color={v.status === 'validated' ? 'success' : 'warning'} 
+                        variant="outlined"
+                        sx={{ textTransform: 'capitalize' }}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {allVisits.filter(v => {
+                  const salesman = users.find(u => u.name === historySalesman || u.nik === historySalesman);
+                  return v.salesmanId === historySalesman || v.salesmanId === salesman?.nik;
+                }).length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={6} align="center" sx={{ py: 3, color: 'text.secondary' }}>
+                      No visit history found for this salesman.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </DialogContent>
       </Dialog>
     </Box>
   );
