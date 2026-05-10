@@ -203,7 +203,7 @@ export default function StoreDetailScreen() {
       // Check location for strict update
       const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const distance = getDistance(location.coords.latitude, location.coords.longitude, store.lat, store.lon);
-      
+
       if (distance > 100) {
         Alert.alert(
           "Outside Radius",
@@ -215,7 +215,7 @@ export default function StoreDetailScreen() {
       setEditingVisit(v);
       setEditOrderItems(v.items || []);
       setEditReturnItems(v.returns || []);
-      setEditAttachments([]); 
+      setEditAttachments([]);
       setEditForm({
         order: String(v.orderAmount),
         retur: String(v.returAmount),
@@ -291,8 +291,8 @@ export default function StoreDetailScreen() {
       'Are you sure you want to permanently delete this photo?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Delete', 
+        {
+          text: 'Delete',
           style: 'destructive',
           onPress: async () => {
             const success = await deleteAttachment(attId);
@@ -447,7 +447,7 @@ export default function StoreDetailScreen() {
   }, [editReturnItems, products]);
 
   const formatCurrency = (amount: number) => 'Rp ' + (amount || 0).toLocaleString('id-ID');
-  
+
   const formatDate = (isoString: string) => {
     if (!isoString) return '-';
     const date = new Date(isoString);
@@ -456,14 +456,14 @@ export default function StoreDetailScreen() {
 
   const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     const R = 6371e3; // metres
-    const φ1 = lat1 * Math.PI/180;
-    const φ2 = lat2 * Math.PI/180;
-    const Δφ = (lat2-lat1) * Math.PI/180;
-    const Δλ = (lon2-lon1) * Math.PI/180;
-    const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-            Math.cos(φ1) * Math.cos(φ2) *
-            Math.sin(Δλ/2) * Math.sin(Δλ/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+      Math.cos(φ1) * Math.cos(φ2) *
+      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c; // in metres
   };
 
@@ -589,7 +589,7 @@ export default function StoreDetailScreen() {
               {formatCurrency(store.historicalSales)}
             </Text>
           </View>
-          
+
           <View style={[styles.infoCard, { borderLeftWidth: 4, borderLeftColor: '#f59e0b' }]}>
             <Text style={styles.infoLabel}>Returns</Text>
             <Text style={[styles.infoValue, { color: '#d97706' }]}>{formatCurrency(Number(returAmount))}</Text>
@@ -598,7 +598,7 @@ export default function StoreDetailScreen() {
             <Text style={styles.infoLabel}>Hist. Returns</Text>
             <Text style={[styles.infoValue, { color: '#b91c1c' }]}>{formatCurrency(store.historicalRetur)}</Text>
           </View>
-          
+
           <View style={[styles.infoCard, styles.infoCardFull, { borderLeftColor: '#6366f1' }]}>
             <Text style={styles.infoLabel}>Outstanding Balance</Text>
             <Text style={[styles.infoValue, { color: '#4338ca', fontSize: 18 }]}>{formatCurrency(store.outstanding)}</Text>
@@ -653,7 +653,7 @@ export default function StoreDetailScreen() {
                       <Text style={styles.historyLabel}>Amount Collected</Text>
                       <Text style={[styles.historyAmount, { color: '#10b981' }]}>{formatCurrency(tagihan)}</Text>
                     </View>
-                    
+
                     <View style={[styles.historyDetailRow, { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#f1f5f9' }]}>
                       <Text style={[styles.historyLabel, { fontWeight: '700', color: '#1e293b' }]}>NET SALES</Text>
                       <Text style={[styles.historyAmount, { fontWeight: '900', color: netSales >= 0 ? '#059669' : '#e53e3e', fontSize: 16 }]}>
@@ -668,8 +668,8 @@ export default function StoreDetailScreen() {
                       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }}>
                         {v.attachments.map((att: any) => (
                           <TouchableOpacity key={att.id} onPress={() => setFullScreenImage(`${SERVER_URL}${att.url}`)}>
-                            <Image 
-                              source={{ uri: `${SERVER_URL}${att.url}` }} 
+                            <Image
+                              source={{ uri: `${SERVER_URL}${att.url}` }}
                               style={{ width: 100, height: 100, borderRadius: 8, marginRight: 8, backgroundColor: '#f7fafc' }}
                               resizeMode="cover"
                             />
@@ -805,8 +805,8 @@ export default function StoreDetailScreen() {
             <View style={[styles.uploadZone, { marginTop: 20 }]}>
               <Text style={styles.uploadTitle}>Transaction Photos</Text>
               <View style={styles.uploadActions}>
-                <TouchableOpacity 
-                  style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]} 
+                <TouchableOpacity
+                  style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]}
                   onPress={() => handleAddPhoto(false)}
                 >
                   <Text style={[styles.uploadBtnIcon, { color: '#fff' }]}>+</Text>
@@ -819,7 +819,7 @@ export default function StoreDetailScreen() {
                   {attachments.map((uri, index) => (
                     <View key={index} style={styles.uploadPreviewItem}>
                       <Image source={{ uri }} style={styles.uploadPreviewImage} />
-                      <TouchableOpacity 
+                      <TouchableOpacity
                         style={styles.uploadRemoveBtn}
                         onPress={() => removeAttachment(uri)}
                       >
@@ -920,8 +920,8 @@ export default function StoreDetailScreen() {
               <View style={styles.uploadZone}>
                 <Text style={styles.uploadTitle}>Transaction Photos</Text>
                 <View style={styles.uploadActions}>
-                  <TouchableOpacity 
-                    style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]} 
+                  <TouchableOpacity
+                    style={[styles.uploadBtn, { backgroundColor: '#0066cc', borderColor: '#0066cc' }]}
                     onPress={() => handleAddPhoto(true)}
                   >
                     <Text style={[styles.uploadBtnIcon, { color: '#fff' }]}>+</Text>
@@ -934,7 +934,7 @@ export default function StoreDetailScreen() {
                     {editAttachments.map((uri, index) => (
                       <View key={index} style={styles.uploadPreviewItem}>
                         <Image source={{ uri }} style={styles.uploadPreviewImage} />
-                        <TouchableOpacity 
+                        <TouchableOpacity
                           style={styles.uploadRemoveBtn}
                           onPress={() => setEditAttachments(prev => prev.filter(u => u !== uri))}
                         >
@@ -954,9 +954,9 @@ export default function StoreDetailScreen() {
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }}>
                     {editingVisit.attachments.map((att: any) => (
                       <TouchableOpacity key={att.id} onPress={() => handleDeleteExistingAttachment(att.id)}>
-                        <Image 
-                          source={{ uri: `${SERVER_URL}${att.url}` }} 
-                          style={{ width: 60, height: 60, borderRadius: 8, marginRight: 8 }} 
+                        <Image
+                          source={{ uri: `${SERVER_URL}${att.url}` }}
+                          style={{ width: 60, height: 60, borderRadius: 8, marginRight: 8 }}
                         />
                         <View style={{ position: 'absolute', top: 0, right: 8, backgroundColor: 'rgba(229, 62, 62, 0.8)', borderRadius: 10, width: 18, height: 18, justifyContent: 'center', alignItems: 'center' }}>
                           <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>×</Text>
@@ -1053,15 +1053,15 @@ export default function StoreDetailScreen() {
         onRequestClose={() => setFullScreenImage(null)}
       >
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' }}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={{ position: 'absolute', top: 50, right: 20, zIndex: 10, padding: 10 }}
             onPress={() => setFullScreenImage(null)}
           >
             <Text style={{ color: 'white', fontSize: 40, fontWeight: '200' }}>×</Text>
           </TouchableOpacity>
           {fullScreenImage && (
-            <Image 
-              source={{ uri: fullScreenImage }} 
+            <Image
+              source={{ uri: fullScreenImage }}
               style={{ width: '100%', height: '80%' }}
               resizeMode="contain"
             />
