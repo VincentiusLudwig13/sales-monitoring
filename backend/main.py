@@ -9,7 +9,7 @@ import os
 import uuid
 import shutil
 import json
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from dotenv import load_dotenv
 
 from database import engine, get_db
@@ -18,17 +18,8 @@ import models
 # Create tables
 models.Base.metadata.create_all(bind=engine)
 
-# Load environment variables
-load_dotenv()
+app = FastAPI()
 
-app = FastAPI(title="Sales Monitoring API")
-
-# Ensure uploads directory exists and serve static files
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-
-# Allow CORS for Expo and Admin Web app
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,61 +28,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- DB Seeding ---
-@app.on_event("startup")
-def seed_data():
-    db = next(get_db())
-    # Seed Admin User
-    admin = db.query(models.User).filter(models.User.nik == "admin").first()
-    if not admin:
-        db.add(models.User(nik="admin", password="admin", name="Admin User", role="admin"))
-    
-    # Seed Default Salesman
-    usman = db.query(models.User).filter(models.User.nik == "12345").first()
-    if not usman:
-        db.add(models.User(nik="12345", password="password", name="Usman", role="salesman"))
+UPLOAD_DIR = "uploads"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
 
-    # Seed Initial Products
-    if db.query(models.Product).count() == 0:
-        products = [
-            models.Product(id="p1", name="Susu UHT 250ml", quantity=100, price=5000, fresh_amount=100, retur_amount=0),
-            models.Product(id="p2", name="Kopi Sachet", quantity=500, price=1500, fresh_amount=500, retur_amount=0),
-            models.Product(id="p3", name="Teh Kotak", quantity=200, price=3500, fresh_amount=200, retur_amount=0),
-        ]
-        db.add_all(products)
-    
-    db.commit()
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # --- Pydantic Models ---
-class LoginRequest(BaseModel):
-    nik: str
-    password: str
-
-class UserResponse(BaseModel):
+class UserBase(BaseModel):
     nik: str
     name: str
     role: str
 
-class Product(BaseModel):
+class LoginRequest(BaseModel):
+    nik: str
+    password: str
+
+class VisitItemBase(BaseModel):
+    product_id: str
+    name: str
+    quantity: int
+    price: float
+    class Config:
+        orm_mode = True
+
+class AttachmentBase(BaseModel):
+    id: int
+    url: str
+    filename: str
+    class Config:
+        orm_mode = True
+
+class VisitReturnBase(BaseModel):
+    product_id: str
+    name: str
+    quantity: int
+    class Config:
+        orm_mode = True
+
+class Visit(BaseModel):
     id: str
-    name: str
-    quantity: int
-    price: float
-    fresh_amount: int
-    retur_amount: int
-
-class OrderItem(BaseModel):
-    product_id: str
-    name: str
-    quantity: int
-    price: float
-
-class ReturnItem(BaseModel):
-    product_id: str
-    name: str
-    quantity: int
-
-class VisitCreate(BaseModel):
     salesmanId: str
     storeId: str
     checkInTime: str
@@ -99,157 +75,154 @@ class VisitCreate(BaseModel):
     orderAmount: float
     returAmount: float
     tagihanAmount: float
-    status: str = "pending"
+    status: str
     attachment_url: Optional[str] = None
-    items: Optional[List[OrderItem]] = None
-    returns: Optional[List[ReturnItem]] = None
+    dueDate: Optional[str] = None
+    paymentStatus: Optional[str] = None
+    items: List[VisitItemBase] = []
+    returns: List[VisitReturnBase] = []
+    attachments: List[AttachmentBase] = []
+    class Config:
+        orm_mode = True
 
-class UserCreate(BaseModel):
-    nik: str
-    password: str
-    name: str
-    role: str = "salesman"
+# --- API Endpoints ---
 
-class UserEdit(BaseModel):
-    password: Optional[str] = None
-    name: Optional[str] = None
-    role: Optional[str] = None
-
-class StoreEdit(BaseModel):
-    salesmanId: str
-
-# --- Endpoints ---
-
-@app.post("/login", response_model=UserResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.nik == request.nik, models.User.password == request.password).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid NIK or Password")
+@app.post("/api/login")
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.nik == req.nik).first()
+    if not user or user.password != req.password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     return {"nik": user.nik, "name": user.name, "role": user.role}
 
-@app.get("/users")
+# --- Users ---
+@app.get("/api/users")
 def get_users(db: Session = Depends(get_db)):
     users = db.query(models.User).all()
     return [{"nik": u.nik, "name": u.name, "role": u.role} for u in users]
 
-@app.post("/users")
-def add_user(user: UserCreate, db: Session = Depends(get_db)):
-    if db.query(models.User).filter(models.User.nik == user.nik).first():
+@app.post("/api/users")
+def add_user(user: dict, db: Session = Depends(get_db)):
+    if db.query(models.User).filter(models.User.nik == user['nik']).first():
         raise HTTPException(status_code=400, detail="NIK already exists")
-    db_user = models.User(**user.dict())
+    db_user = models.User(**user)
     db.add(db_user)
-    db.commit()
-    return {"status": "success", "user": user}
-
-@app.put("/users/{nik}")
-def edit_user(nik: str, userData: UserEdit, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.nik == nik).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if userData.name: user.name = userData.name
-    if userData.password: user.password = userData.password
-    if userData.role: user.role = userData.role
-    
-    db.commit()
-    return {"status": "success", "user": {"nik": user.nik, "name": user.name, "role": user.role}}
-
-@app.get("/stores")
-def get_stores(db: Session = Depends(get_db)):
-    return db.query(models.Store).all()
-
-@app.post("/stores")
-async def register_store(
-    name: str = Form(...),
-    lat: float = Form(...),
-    lon: float = Form(...),
-    salesmanId: str = Form(...),
-    photo: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
-    # Save photo to uploads directory
-    ext = os.path.splitext(photo.filename)[1]
-    unique_name = f"{uuid.uuid4()}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, unique_name)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(photo.file, buffer)
-    # Create store entry
-    store_id = str(uuid.uuid4())
-    store = models.Store(
-        id=store_id,
-        name=name,
-        lat=lat,
-        lon=lon,
-        photo_url=f"/uploads/{unique_name}",
-        historicalSales=0,
-        historicalRetur=0,
-        outstanding=0,
-        salesmanId=salesmanId
-    )
-    db.add(store)
-    db.commit()
-    db.refresh(store)
-    return {"status": "success", "store": store}
-
-@app.put("/stores/{store_id}")
-def edit_store(store_id: str, storeData: StoreEdit, db: Session = Depends(get_db)):
-    store = db.query(models.Store).filter(models.Store.id == store_id).first()
-    if not store:
-        raise HTTPException(status_code=404, detail="Store not found")
-    
-    store.salesmanId = storeData.salesmanId
-    db.commit()
-    return {"status": "success", "store": store}
-
-# --- Product Endpoints ---
-
-@app.get("/products")
-def get_products(db: Session = Depends(get_db)):
-    return db.query(models.Product).all()
-
-@app.post("/products")
-def add_product(product: Product, db: Session = Depends(get_db)):
-    if db.query(models.Product).filter(models.Product.id == product.id).first():
-        raise HTTPException(status_code=400, detail="Product ID already exists")
-    db_product = models.Product(**product.dict())
-    db.add(db_product)
-    db.commit()
-    return {"status": "success", "product": product}
-
-@app.put("/products/{product_id}")
-def edit_product(product_id: str, productData: Product, db: Session = Depends(get_db)):
-    product = db.query(models.Product).filter(models.Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    for key, value in productData.dict().items():
-        setattr(product, key, value)
-    
-    db.commit()
-    return {"status": "success", "product": product}
-
-@app.delete("/products/{product_id}")
-def delete_product(product_id: str, db: Session = Depends(get_db)):
-    product = db.query(models.Product).filter(models.Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    db.delete(product)
     db.commit()
     return {"status": "success"}
 
-@app.get("/visits")
-def get_all_visits(db: Session = Depends(get_db)):
-    return db.query(models.Visit).all()
+@app.put("/api/users/{nik}")
+def edit_user(nik: str, user_data: dict, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.nik == nik).first()
+    if not db_user: raise HTTPException(status_code=404)
+    for k, v in user_data.items(): setattr(db_user, k, v)
+    db.commit()
+    return {"status": "success"}
 
-@app.get("/visits/{salesman_id}")
-def get_visits(salesman_id: str, db: Session = Depends(get_db)):
-    return db.query(models.Visit).filter(models.Visit.salesmanId == salesman_id).all()
+# --- Stores ---
+@app.get("/api/stores")
+def get_stores(db: Session = Depends(get_db)):
+    return db.query(models.Store).options(joinedload(models.Store.attachments)).all()
 
-@app.get("/visits/store/{store_id}")
-def get_visits_by_store(store_id: str, db: Session = Depends(get_db)):
-    return db.query(models.Visit).filter(models.Visit.storeId == store_id).all()
+@app.post("/api/stores")
+async def create_store(
+    name: str = Form(...),
+    lat: float = Form(...),
+    lon: float = Form(...),
+    salesmanId: str = Form("unknown"),
+    photos: List[UploadFile] = File(None),
+    db: Session = Depends(get_db)
+):
+    store_id = str(uuid.uuid4())
+    main_photo_url = None
+    
+    db_store = models.Store(
+        id=store_id, name=name, lat=lat, lon=lon,
+        photo_url=None, salesmanId=salesmanId,
+        historicalSales=0.0, historicalRetur=0.0, outstanding=0.0
+    )
+    db.add(db_store)
 
-@app.post("/visits")
+    if photos:
+        for idx, photo in enumerate(photos):
+            ext = os.path.splitext(photo.filename)[1]
+            unique_name = f"store_{store_id}_{uuid.uuid4()}{ext}"
+            file_path = os.path.join(UPLOAD_DIR, unique_name)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(photo.file, buffer)
+            
+            url = f"/uploads/{unique_name}"
+            if idx == 0: main_photo_url = url
+            
+            db_att = models.Attachment(store_id=store_id, url=url, filename=photo.filename)
+            db.add(db_att)
+    
+    db_store.photo_url = main_photo_url
+    db.commit()
+    return {"status": "success", "store": db_store}
+
+@app.put("/api/stores/{id}")
+async def update_store(
+    id: str,
+    name: Optional[str] = Form(None),
+    lat: Optional[float] = Form(None),
+    lon: Optional[float] = Form(None),
+    salesmanId: Optional[str] = Form(None),
+    new_photos: List[UploadFile] = File(None),
+    db: Session = Depends(get_db)
+):
+    store = db.query(models.Store).filter(models.Store.id == id).first()
+    if not store: raise HTTPException(status_code=404)
+    
+    if name is not None: store.name = name
+    if lat is not None: store.lat = lat
+    if lon is not None: store.lon = lon
+    if salesmanId is not None: store.salesmanId = salesmanId
+
+    if new_photos:
+        for photo in new_photos:
+            ext = os.path.splitext(photo.filename)[1]
+            unique_name = f"store_{id}_{uuid.uuid4()}{ext}"
+            file_path = os.path.join(UPLOAD_DIR, unique_name)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(photo.file, buffer)
+            
+            url = f"/uploads/{unique_name}"
+            db_att = models.Attachment(store_id=id, url=url, filename=photo.filename)
+            db.add(db_att)
+            if not store.photo_url: store.photo_url = url
+            
+    db.commit()
+    return {"status": "success"}
+
+# --- Products ---
+@app.get("/api/products")
+def get_products(db: Session = Depends(get_db)):
+    return db.query(models.Product).all()
+
+@app.post("/api/products")
+def create_product(prod: dict, db: Session = Depends(get_db)):
+    db_prod = models.Product(**prod)
+    db.add(db_prod)
+    db.commit()
+    return {"status": "success"}
+
+@app.put("/api/products/{id}")
+def update_product(id: str, prod: dict, db: Session = Depends(get_db)):
+    db_prod = db.query(models.Product).filter(models.Product.id == id).first()
+    if not db_prod: raise HTTPException(status_code=404)
+    for k, v in prod.items(): setattr(db_prod, k, v)
+    db.commit()
+    return {"status": "success"}
+
+@app.delete("/api/products/{id}")
+def delete_product(id: str, db: Session = Depends(get_db)):
+    db_prod = db.query(models.Product).filter(models.Product.id == id).first()
+    if db_prod:
+        db.delete(db_prod)
+        db.commit()
+    return {"status": "success"}
+
+# --- Visits ---
+@app.post("/api/visits")
 async def create_visit(
     salesmanId: str = Form(...),
     storeId: str = Form(...),
@@ -260,48 +233,40 @@ async def create_visit(
     tagihanAmount: float = Form(...),
     items: Optional[str] = Form(None),
     returns: Optional[str] = Form(None),
-    attachment: Optional[UploadFile] = File(None),
+    attachments: List[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
     parsed_items = json.loads(items) if items else []
     parsed_returns = json.loads(returns) if returns else []
 
-    # If items are provided, orderAmount should be the sum
-    if parsed_items:
-        orderAmount = sum(item['quantity'] * item['price'] for item in parsed_items)
-    
-    if parsed_returns:
-        val = 0
-        for r in parsed_returns:
-            prod = db.query(models.Product).filter(models.Product.id == r['product_id']).first()
-            if prod:
-                val += r['quantity'] * prod.price
-        returAmount = val
-
-    attachment_url = None
-    if attachment:
-        ext = os.path.splitext(attachment.filename)[1]
-        unique_name = f"visit_{uuid.uuid4()}{ext}"
-        file_path = os.path.join(UPLOAD_DIR, unique_name)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(attachment.file, buffer)
-        attachment_url = f"/uploads/{unique_name}"
-
     visit_id = str(int(time.time() * 1000))
+    main_att_url = None
+    
     visit = models.Visit(
-        id=visit_id,
-        salesmanId=salesmanId,
-        storeId=storeId,
-        checkInTime=checkInTime,
-        checkOutTime=checkOutTime,
-        orderAmount=orderAmount,
-        returAmount=returAmount,
-        tagihanAmount=tagihanAmount,
-        status="pending",
-        attachment_url=attachment_url
+        id=visit_id, salesmanId=salesmanId, storeId=storeId,
+        checkInTime=checkInTime, checkOutTime=checkOutTime,
+        orderAmount=orderAmount, returAmount=returAmount,
+        tagihanAmount=tagihanAmount, status="pending",
+        attachment_url=None
     )
+    db.add(visit)
 
-    # Calculate due date
+    if attachments:
+        for idx, att in enumerate(attachments):
+            ext = os.path.splitext(att.filename)[1]
+            unique_name = f"visit_{visit_id}_{uuid.uuid4()}{ext}"
+            file_path = os.path.join(UPLOAD_DIR, unique_name)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(att.file, buffer)
+            
+            url = f"/uploads/{unique_name}"
+            if idx == 0: main_att_url = url
+            
+            db_att = models.Attachment(visit_id=visit_id, url=url, filename=att.filename)
+            db.add(db_att)
+
+    visit.attachment_url = main_att_url
+
     if orderAmount > 0:
         try:
             checkin_dt = datetime.fromisoformat(checkInTime.replace("Z", "+00:00"))
@@ -309,31 +274,21 @@ async def create_visit(
             checkin_dt = datetime.now()
         visit.dueDate = (checkin_dt + timedelta(days=3)).isoformat()
 
-    # Payment Status Logic
-    net_payable = orderAmount - returAmount
-    if orderAmount > 0:
-        if tagihanAmount >= net_payable:
-            visit.paymentStatus = "Full Payment"
-        elif tagihanAmount > 0:
-            visit.paymentStatus = "Partial Payment"
-        else:
-            visit.paymentStatus = "Unpaid"
+    if tagihanAmount > 0 and orderAmount == 0:
+        visit.paymentStatus = "Paid"
+    elif tagihanAmount >= orderAmount and orderAmount > 0:
+        visit.paymentStatus = "Paid"
+    elif tagihanAmount > 0:
+        visit.paymentStatus = "Partial"
     else:
         visit.paymentStatus = "Collection Only" if tagihanAmount > 0 else "-"
 
-    db.add(visit)
-
-    # Add items and returns
     for item in parsed_items:
         db_item = models.VisitItem(
-            visit_id=visit_id,
-            product_id=item['product_id'],
-            name=item['name'],
-            quantity=item['quantity'],
-            price=item['price']
+            visit_id=visit_id, product_id=item['product_id'],
+            name=item['name'], quantity=item['quantity'], price=item['price']
         )
         db.add(db_item)
-        # Deduct stock
         prod = db.query(models.Product).filter(models.Product.id == item['product_id']).first()
         if prod:
             prod.fresh_amount = max(0, prod.fresh_amount - item['quantity'])
@@ -341,238 +296,174 @@ async def create_visit(
 
     for ret in parsed_returns:
         db_ret = models.VisitReturn(
-            visit_id=visit_id,
-            product_id=ret['product_id'],
-            name=ret['name'],
-            quantity=ret['quantity']
+            visit_id=visit_id, product_id=ret['product_id'],
+            name=ret['name'], quantity=ret['quantity']
         )
         db.add(db_ret)
-        # Adjust stock
         prod = db.query(models.Product).filter(models.Product.id == ret['product_id']).first()
         if prod:
             prod.retur_amount = prod.retur_amount + ret['quantity']
             prod.quantity = prod.fresh_amount + prod.retur_amount
 
-    # Update store balance
-    store = db.query(models.Store).filter(models.Store.id == storeId).first()
-    if store:
-        store.outstanding = store.outstanding + orderAmount - tagihanAmount - returAmount
-        store.historicalSales = store.historicalSales + orderAmount
-        store.historicalRetur = store.historicalRetur + returAmount
-
-    db.commit()
-    db.refresh(visit)
-    return {"status": "success", "visit": visit}
-
-@app.put("/visits/{visit_id}")
-def edit_visit(visit_id: str, visit_update: VisitCreate, db: Session = Depends(get_db)):
-    visit = db.query(models.Visit).filter(models.Visit.id == visit_id).first()
-    if not visit:
-        raise HTTPException(status_code=404, detail="Visit not found")
-
-    store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
-    if store and visit.status != "rejected":
-        store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
-        store.historicalSales = store.historicalSales - visit.orderAmount
-        store.historicalRetur = store.historicalRetur - visit.returAmount
-
-    # Revert stock
-    for item in visit.items:
-        prod = db.query(models.Product).filter(models.Product.id == item.product_id).first()
-        if prod:
-            prod.fresh_amount = prod.fresh_amount + item.quantity
-            prod.quantity = prod.fresh_amount + prod.retur_amount
-    for ret in visit.returns:
-        prod = db.query(models.Product).filter(models.Product.id == ret.product_id).first()
-        if prod:
-            prod.retur_amount = max(0, prod.retur_amount - ret.quantity)
-            prod.quantity = prod.fresh_amount + prod.retur_amount
-
-    # Update visit fields
-    visit.status = "pending"
+    # NOTE: Store balances are now updated ONLY upon validation, not creation.
     
-    # Delete old items and returns
-    db.query(models.VisitItem).filter(models.VisitItem.visit_id == visit_id).delete()
-    db.query(models.VisitReturn).filter(models.VisitReturn.visit_id == visit_id).delete()
+    db.commit()
+    return {"status": "success", "visit_id": visit_id}
 
-    # Add new ones
-    order_total = 0
-    if visit_update.items:
-        for item in visit_update.items:
-            db_item = models.VisitItem(visit_id=visit_id, **item.dict())
-            db.add(db_item)
-            order_total += item.quantity * item.price
-            # Deduct stock
-            prod = db.query(models.Product).filter(models.Product.id == item.product_id).first()
-            if prod:
-                prod.fresh_amount = max(0, prod.fresh_amount - item.quantity)
-                prod.quantity = prod.fresh_amount + prod.retur_amount
-        visit.orderAmount = order_total
-    else:
-        visit.orderAmount = visit_update.orderAmount
+@app.get("/api/visits")
+def get_all_visits(db: Session = Depends(get_db)):
+    return db.query(models.Visit).options(
+        joinedload(models.Visit.items), 
+        joinedload(models.Visit.returns),
+        joinedload(models.Visit.attachments)
+    ).all()
 
-    retur_total = 0
-    if visit_update.returns:
-        for ret in visit_update.returns:
-            db_ret = models.VisitReturn(visit_id=visit_id, **ret.dict())
-            db.add(db_ret)
-            prod = db.query(models.Product).filter(models.Product.id == ret.product_id).first()
-            if prod:
-                retur_total += ret.quantity * prod.price
-                prod.retur_amount = prod.retur_amount + ret.quantity
-                prod.quantity = prod.fresh_amount + prod.retur_amount
-        visit.returAmount = retur_total
-    else:
-        visit.returAmount = visit_update.returAmount
+@app.get("/api/visits/{salesman_id}")
+def get_visits(salesman_id: str, db: Session = Depends(get_db)):
+    return db.query(models.Visit).options(
+        joinedload(models.Visit.items), 
+        joinedload(models.Visit.returns),
+        joinedload(models.Visit.attachments)
+    ).filter(models.Visit.salesmanId == salesman_id).all()
 
-    visit.tagihanAmount = visit_update.tagihanAmount
+@app.get("/api/visits/store/{store_id}")
+def get_visits_by_store(store_id: str, db: Session = Depends(get_db)):
+    return db.query(models.Visit).options(
+        joinedload(models.Visit.items), 
+        joinedload(models.Visit.returns),
+        joinedload(models.Visit.attachments)
+    ).filter(models.Visit.storeId == store_id).all()
 
-    # Logic for due date and payment status
-    if visit.orderAmount > 0 and visit.orderAmount != visit.tagihanAmount:
-        try:
-            checkin_dt = datetime.fromisoformat(visit.checkInTime.replace("Z", "+00:00"))
-        except:
-            checkin_dt = datetime.now()
-        visit.dueDate = (checkin_dt + timedelta(days=3)).isoformat()
-    else:
-        visit.dueDate = None
-
-    net_payable = visit.orderAmount - visit.returAmount
-    if visit.orderAmount > 0:
-        if visit.tagihanAmount >= net_payable:
-            visit.paymentStatus = "Full Payment"
-        elif visit.tagihanAmount > 0:
-            visit.paymentStatus = "Partial Payment"
-        else:
-            visit.paymentStatus = "Unpaid"
-    else:
-        visit.paymentStatus = "Collection Only" if visit.tagihanAmount > 0 else "-"
-
+@app.post("/api/visits/{id}/validate")
+def validate_visit(id: str, db: Session = Depends(get_db)):
+    visit = db.query(models.Visit).filter(models.Visit.id == id).first()
+    if not visit: raise HTTPException(status_code=404)
+    if visit.status == "validated": return {"status": "already validated"}
+    
+    visit.status = "validated"
+    
+    # Update store balance ONLY now
+    store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
     if store:
         store.outstanding = store.outstanding + visit.orderAmount - visit.tagihanAmount - visit.returAmount
         store.historicalSales = store.historicalSales + visit.orderAmount
-        store.historicalRetur = store.historicalRetur + visit.returAmount
-
-    db.commit()
-    db.refresh(visit)
-    return {"status": "success", "visit": visit}
-
-@app.post("/visits/{visit_id}/validate")
-def validate_visit(visit_id: str, db: Session = Depends(get_db)):
-    visit = db.query(models.Visit).filter(models.Visit.id == visit_id).first()
-    if not visit:
-        raise HTTPException(status_code=404, detail="Visit not found")
-    
-    visit.status = "validated"
-    db.commit()
-    return {"status": "success", "visit": visit}
-
-@app.delete("/visits/{visit_id}")
-def delete_visit(visit_id: str, db: Session = Depends(get_db)):
-    visit = db.query(models.Visit).filter(models.Visit.id == visit_id).first()
-    if not visit:
-        raise HTTPException(status_code=404, detail="Visit not found")
-    
-    # Restore stock
-    for item in visit.items:
-        prod = db.query(models.Product).filter(models.Product.id == item.product_id).first()
-        if prod:
-            prod.fresh_amount = prod.fresh_amount + item.quantity
-            prod.quantity = prod.fresh_amount + prod.retur_amount
-    for ret in visit.returns:
-        prod = db.query(models.Product).filter(models.Product.id == ret.product_id).first()
-        if prod:
-            prod.retur_amount = max(0, prod.retur_amount - ret.quantity)
-            prod.quantity = prod.fresh_amount + prod.retur_amount
-
-    # Revert store balance
-    if visit.status != "rejected":
-        store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
-        if store:
-            store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
-            store.historicalSales = store.historicalSales - visit.orderAmount
-            store.historicalRetur = store.historicalRetur - visit.returAmount
-
-    db.delete(visit)
+        
     db.commit()
     return {"status": "success"}
 
-@app.post("/visits/{visit_id}/reject")
-def reject_visit(visit_id: str, db: Session = Depends(get_db)):
-    visit = db.query(models.Visit).filter(models.Visit.id == visit_id).first()
-    if not visit:
-        raise HTTPException(status_code=404, detail="Visit not found")
-    
-    if visit.status == "rejected":
-        return {"status": "already rejected"}
-
-    # Restore stock
-    for item in visit.items:
-        prod = db.query(models.Product).filter(models.Product.id == item.product_id).first()
-        if prod:
-            prod.fresh_amount = prod.fresh_amount + item.quantity
-            prod.quantity = prod.fresh_amount + prod.retur_amount
-
-    for ret in visit.returns:
-        prod = db.query(models.Product).filter(models.Product.id == ret.product_id).first()
-        if prod:
-            prod.retur_amount = max(0, prod.retur_amount - ret.quantity)
-            prod.quantity = prod.fresh_amount + prod.retur_amount
-
+@app.post("/api/visits/{id}/reject")
+def reject_visit(id: str, db: Session = Depends(get_db)):
+    visit = db.query(models.Visit).filter(models.Visit.id == id).first()
+    if not visit: raise HTTPException(status_code=404)
+    visit.status = "rejected"
     # Revert store balance
     store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
     if store:
         store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
-        store.historicalSales = store.historicalSales - visit.orderAmount
-        store.historicalRetur = store.historicalRetur - visit.returAmount
-
-    visit.status = "rejected"
     db.commit()
     return {"status": "success"}
 
-@app.get("/stats/admin")
+@app.delete("/api/visits/{id}")
+def delete_visit(id: str, db: Session = Depends(get_db)):
+    visit = db.query(models.Visit).filter(models.Visit.id == id).first()
+    if visit:
+        # Revert store balance before deleting
+        store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
+        if store and visit.status != "rejected":
+            store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
+        db.delete(visit)
+        db.commit()
+    return {"status": "success"}
+
+@app.put("/api/visits/{id}")
+async def update_visit(
+    id: str,
+    orderAmount: Optional[float] = Form(None),
+    returAmount: Optional[float] = Form(None),
+    tagihanAmount: Optional[float] = Form(None),
+    paymentStatus: Optional[str] = Form(None),
+    items: Optional[str] = Form(None),
+    returns: Optional[str] = Form(None),
+    new_attachments: List[UploadFile] = File(None),
+    db: Session = Depends(get_db)
+):
+    visit = db.query(models.Visit).filter(models.Visit.id == id).first()
+    if not visit: raise HTTPException(status_code=404)
+    
+    store = db.query(models.Store).filter(models.Store.id == visit.storeId).first()
+    
+    if store and visit.status == "validated":
+        store.outstanding = store.outstanding - visit.orderAmount + visit.tagihanAmount + visit.returAmount
+        store.historicalSales = store.historicalSales - visit.orderAmount
+
+    if orderAmount is not None: visit.orderAmount = orderAmount
+    if returAmount is not None: visit.returAmount = returAmount
+    if tagihanAmount is not None: visit.tagihanAmount = tagihanAmount
+    if paymentStatus is not None: visit.paymentStatus = paymentStatus
+    
+    visit.status = "pending"
+
+    if items:
+        parsed_items = json.loads(items)
+        db.query(models.VisitItem).filter(models.VisitItem.visit_id == id).delete()
+        for item in parsed_items:
+            db_item = models.VisitItem(
+                visit_id=id, product_id=item['product_id'],
+                name=item['name'], quantity=item['quantity'], price=item['price']
+            )
+            db.add(db_item)
+
+    if returns:
+        parsed_returns = json.loads(returns)
+        db.query(models.VisitReturn).filter(models.VisitReturn.visit_id == id).delete()
+        for ret in parsed_returns:
+            db_ret = models.VisitReturn(
+                visit_id=id, product_id=ret['product_id'],
+                name=ret['name'], quantity=ret['quantity']
+            )
+            db.add(db_ret)
+
+    if new_attachments:
+        for att in new_attachments:
+            ext = os.path.splitext(att.filename)[1]
+            unique_name = f"visit_{id}_{uuid.uuid4()}{ext}"
+            file_path = os.path.join(UPLOAD_DIR, unique_name)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(att.file, buffer)
+            
+            url = f"/uploads/{unique_name}"
+            db_att = models.Attachment(visit_id=id, url=url, filename=att.filename)
+            db.add(db_att)
+            if not visit.attachment_url: visit.attachment_url = url
+        
+    db.commit()
+    return {"status": "success"}
+
+# --- Admin Stats ---
+@app.get("/api/stats/admin")
 def get_admin_stats(db: Session = Depends(get_db)):
     now = datetime.now()
     current_month = now.month
     current_year = now.year
-    seven_days_ago = (now - timedelta(days=7)).isoformat()
-
     visits = db.query(models.Visit).all()
-    
     sales_mtd = 0
     retur_mtd = 0
-    active_store_ids = set()
-
     for v in visits:
-        if v.status == "rejected": continue
+        if v.status != "validated": continue
         try:
             visit_date = datetime.fromisoformat(v.checkInTime.replace("Z", "+00:00"))
         except:
             continue
-            
         if visit_date.month == current_month and visit_date.year == current_year:
             sales_mtd += v.orderAmount
             retur_mtd += v.returAmount
-            
-        if v.checkInTime >= seven_days_ago and v.orderAmount > 0:
-            active_store_ids.add(v.storeId)
-
     total_stores = db.query(models.Store).count()
-    active_count = len(active_store_ids)
-    total_outstanding_rows = db.query(models.Store).with_entities(models.Store.outstanding).all()
-    total_outstanding = sum(s[0] for s in total_outstanding_rows)
-
+    total_outstanding = sum(s[0] for s in db.query(models.Store.outstanding).all())
     return {
-        "sales_mtd": sales_mtd,
-        "retur_mtd": retur_mtd,
-        "total_outstanding": total_outstanding,
-        "active_stores": active_count,
-        "inactive_stores": total_stores - active_count,
-        "total_stores": total_stores
+        "sales_mtd": sales_mtd, "retur_mtd": retur_mtd,
+        "total_outstanding": total_outstanding, "total_stores": total_stores
     }
 
 if __name__ == "__main__":
     import uvicorn
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", 9000))
-    uvicorn.run("main:app", host=host, port=port, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=9000)

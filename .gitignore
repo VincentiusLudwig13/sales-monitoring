@@ -152,4 +152,20 @@ SalesMonitoring/.expo/
 SalesMonitoring/node_modules/
 AdminWeb/node_modules/
 AdminWeb/dist/
-test.jpg
+test.jpg
+
+# Deployment scripts (contain VPS credentials)
+redeploy_backend.py
+seed_db.py
+vps_restore.py
+test_store.js
+
+# Build artifacts
+*.tar.gz
+
+# Mobile app build output
+SalesMonitoring/android/
+SalesMonitoring/ios/
+SalesMonitoring/build.txt
+SalesMonitoring/build_log.txt
+SalesMonitoring/.env

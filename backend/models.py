@@ -23,6 +23,8 @@ class Store(Base):
     historicalRetur = Column(Float, default=0)
     outstanding = Column(Float, default=0)
     salesmanId = Column(String) # For now, simple string link
+    
+    attachments = relationship("Attachment", back_populates="store", cascade="all, delete-orphan")
 
 class Product(Base):
     __tablename__ = "products"
@@ -52,6 +54,20 @@ class Visit(Base):
 
     items = relationship("VisitItem", back_populates="visit", cascade="all, delete-orphan")
     returns = relationship("VisitReturn", back_populates="visit", cascade="all, delete-orphan")
+    attachments = relationship("Attachment", back_populates="visit", cascade="all, delete-orphan")
+
+
+class Attachment(Base):
+    __tablename__ = "attachments"
+    id = Column(Integer, primary_key=True, index=True)
+    visit_id = Column(String, ForeignKey("visits.id"), nullable=True)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=True)
+    url = Column(String)
+    filename = Column(String)
+    created_at = Column(DateTime, default=datetime.now)
+
+    visit = relationship("Visit", back_populates="attachments")
+    store = relationship("Store", back_populates="attachments")
 
 class VisitItem(Base):
     __tablename__ = "visit_items"

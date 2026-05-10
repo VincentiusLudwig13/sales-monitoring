@@ -1,5 +1,7 @@
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:9000';
+export const SERVER_URL = API_BASE_URL.replace('/api', '');
 console.log('API_BASE_URL:', API_BASE_URL);
+console.log('SERVER_URL:', SERVER_URL);
 export const USERS_KEY = 'sales_users';
 
 export const initDummyData = async () => {
@@ -69,7 +71,7 @@ export const getVisitsByStore = async (storeId) => {
   }
 };
 
-export const saveVisit = async (visit, photoUri) => {
+export const saveVisit = async (visit, attachmentUris = []) => {
   try {
     const form = new FormData();
     form.append('salesmanId', visit.salesmanId);
@@ -83,13 +85,15 @@ export const saveVisit = async (visit, photoUri) => {
     if (visit.items) form.append('items', JSON.stringify(visit.items));
     if (visit.returns) form.append('returns', JSON.stringify(visit.returns));
 
-    if (photoUri) {
-      const filename = photoUri.split('/').pop();
-      const ext = filename.split('.').pop();
-      form.append('attachment', {
-        uri: photoUri,
-        name: filename,
-        type: `image/${ext}`,
+    if (attachmentUris && attachmentUris.length > 0) {
+      attachmentUris.forEach((uri, index) => {
+        const filename = uri.split('/').pop();
+        const ext = filename.split('.').pop();
+        form.append('attachments', {
+          uri: uri,
+          name: filename,
+          type: `image/${ext}`,
+        });
       });
     }
 
@@ -109,7 +113,7 @@ export const saveVisit = async (visit, photoUri) => {
   }
 };
 
-export const registerStore = async (name, lat, lon, photoUri, salesmanId) => {
+export const registerStore = async (name, lat, lon, photoUris = [], salesmanId) => {
   try {
     const form = new FormData();
     form.append('name', name);
@@ -117,13 +121,17 @@ export const registerStore = async (name, lat, lon, photoUri, salesmanId) => {
     form.append('lon', String(lon));
     form.append('salesmanId', salesmanId ? String(salesmanId) : 'unknown');
 
-    const filename = photoUri.split('/').pop();
-    const ext = filename.split('.').pop();
-    form.append('photo', {
-      uri: photoUri,
-      name: filename,
-      type: `image/${ext}`,
-    });
+    if (photoUris && photoUris.length > 0) {
+      photoUris.forEach((uri) => {
+        const filename = uri.split('/').pop();
+        const ext = filename.split('.').pop();
+        form.append('photos', {
+          uri: uri,
+          name: filename,
+          type: `image/${ext}`,
+        });
+      });
+    }
 
     const response = await fetch(`${API_BASE_URL}/stores`, {
       method: 'POST',
@@ -139,6 +147,42 @@ export const registerStore = async (name, lat, lon, photoUri, salesmanId) => {
   } catch (e) {
     console.error('Register store error:', e);
     return null;
+  }
+};
+
+export const updateStore = async (storeId, storeData, newPhotoUris = []) => {
+  try {
+    const form = new FormData();
+    if (storeData.name) form.append('name', storeData.name);
+    if (storeData.lat) form.append('lat', String(storeData.lat));
+    if (storeData.lon) form.append('lon', String(storeData.lon));
+    if (storeData.salesmanId) form.append('salesmanId', storeData.salesmanId);
+
+    if (newPhotoUris && newPhotoUris.length > 0) {
+      newPhotoUris.forEach((uri) => {
+        const filename = uri.split('/').pop();
+        const ext = filename.split('.').pop();
+        form.append('new_photos', {
+          uri: uri,
+          name: filename,
+          type: `image/${ext}`,
+        });
+      });
+    }
+
+    const response = await fetch(`${API_BASE_URL}/stores/${storeId}`, {
+      method: 'PUT',
+      body: form,
+    });
+
+    if (!response.ok) {
+      console.error('Update store failed');
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error('Update store error:', e);
+    return false;
   }
 };
 

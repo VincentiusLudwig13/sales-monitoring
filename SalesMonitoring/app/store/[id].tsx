@@ -2,8 +2,22 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator, Modal, Image, Linking } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
-import MapView, { Marker, Circle } from 'react-native-maps';
-import { getStores, saveVisit, getVisitsByStore, updateVisit, getProducts, API_BASE_URL } from '../../utils/storage';
+import { WebView } from 'react-native-webview';
+
+let MapView: any = View;
+let Marker: any = View;
+let Circle: any = View;
+let mapsAvailable = false;
+try {
+  const maps = require('react-native-maps');
+  if (maps.default) MapView = maps.default;
+  if (maps.Marker) Marker = maps.Marker;
+  if (maps.Circle) Circle = maps.Circle;
+  mapsAvailable = !!maps.default;
+} catch (e) {
+  // react-native-maps not available (e.g. Expo Go)
+}
+import { getStores, saveVisit, getVisitsByStore, updateVisit, getProducts, API_BASE_URL, SERVER_URL } from '../../utils/storage';
 import { getDistanceInMeters } from '../../utils/location';
 import { useAuth } from '../../context/AuthContext';
 import { StatusBar } from 'expo-status-bar';
@@ -22,6 +36,7 @@ export default function StoreDetailScreen() {
   const [checkInTime, setCheckInTime] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [visitHistory, setVisitHistory] = useState<any[]>([]);
+  const [userLocation, setUserLocation] = useState<Location.LocationObject | null>(null);
 
   const [orderAmount, setOrderAmount] = useState('');
   const [returAmount, setReturAmount] = useState('');
@@ -34,12 +49,14 @@ export default function StoreDetailScreen() {
   const [products, setProducts] = useState<any[]>([]);
   const [orderItems, setOrderItems] = useState<any[]>([]);
   const [returnItems, setReturnItems] = useState<any[]>([]);
+  const [editOrderItems, setEditOrderItems] = useState<any[]>([]);
+  const [editReturnItems, setEditReturnItems] = useState<any[]>([]);
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'order' | 'retur'>('order');
   const [tempQuantities, setTempQuantities] = useState<Record<string, number>>({});
 
   // Attachment State
-  const [attachment, setAttachment] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<string[]>([]);
 
   const fetchStore = async () => {
     const stores = await getStores();
@@ -55,6 +72,16 @@ export default function StoreDetailScreen() {
   useEffect(() => {
     fetchStore();
   }, [id]);
+
+  useEffect(() => {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') {
+        let location = await Location.getCurrentPositionAsync({});
+        setUserLocation(location);
+      }
+    })();
+  }, []);
 
   const handleCheckIn = async () => {
     if (!store) return;
@@ -102,7 +129,7 @@ export default function StoreDetailScreen() {
     });
 
     if (!result.canceled) {
-      setAttachment(result.assets[0].uri);
+      setAttachments(prev => [...prev, result.assets[0].uri]);
     }
   };
 
@@ -134,7 +161,7 @@ export default function StoreDetailScreen() {
       status: 'pending'
     };
 
-    const success = await saveVisit(visit, attachment);
+    const success = await saveVisit(visit, attachments);
     if (success) {
       Alert.alert('Success', 'Visit recorded successfully!', [
         { text: 'OK', onPress: () => router.push('/dashboard') }
@@ -146,26 +173,26 @@ export default function StoreDetailScreen() {
 
   const handleOpenEdit = (v: any) => {
     setEditingVisit(v);
-    setOrderItems(v.items || []);
-    setReturnItems(v.returns || []);
-    setEditForm({ 
-      order: String(v.orderAmount), 
-      retur: String(v.returAmount), 
-      tagihan: String(v.tagihanAmount) 
+    setEditOrderItems(v.items || []);
+    setEditReturnItems(v.returns || []);
+    setEditForm({
+      order: String(v.orderAmount),
+      retur: String(v.returAmount),
+      tagihan: String(v.tagihanAmount)
     });
   };
 
   const handleCloseEdit = () => {
     setEditingVisit(null);
-    setOrderItems([]);
-    setReturnItems([]);
+    setEditOrderItems([]);
+    setEditReturnItems([]);
   };
 
   const handleSaveEdit = async () => {
     if (!editingVisit) return;
 
-    const calculatedOrderTotal = orderItems.reduce((sum, item) => sum + (item.quantity * item.price), 0);
-    const calculatedReturTotal = returnItems.reduce((sum, item) => {
+    const calculatedOrderTotal = editOrderItems.reduce((sum, item) => sum + (item.quantity * item.price), 0);
+    const calculatedReturTotal = editReturnItems.reduce((sum, item) => {
       const prod = products.find(p => p.id === item.product_id);
       return sum + (item.quantity * (prod?.price || 0));
     }, 0);
@@ -175,8 +202,8 @@ export default function StoreDetailScreen() {
       orderAmount: calculatedOrderTotal,
       returAmount: calculatedReturTotal,
       tagihanAmount: Number(editForm.tagihan),
-      items: orderItems,
-      returns: returnItems
+      items: editOrderItems,
+      returns: editReturnItems
     };
     const success = await updateVisit(editingVisit.id, updated);
     if (success) {
@@ -193,7 +220,12 @@ export default function StoreDetailScreen() {
   const handleOpenProductModal = (type: 'order' | 'retur') => {
     setModalType(type);
     const initialQs: Record<string, number> = {};
-    const currentItems = type === 'order' ? orderItems : returnItems;
+    let currentItems: any[] = [];
+    if (editingVisit) {
+      currentItems = type === 'order' ? editOrderItems : editReturnItems;
+    } else {
+      currentItems = type === 'order' ? orderItems : returnItems;
+    }
     products.forEach(p => {
       const existing = currentItems.find(i => i.product_id === p.id);
       initialQs[p.id] = existing ? existing.quantity : 0;
@@ -210,6 +242,26 @@ export default function StoreDetailScreen() {
   };
 
   const handleApplyBulkSelection = () => {
+    if (modalType === 'retur') {
+      const invalidItems: string[] = [];
+      Object.entries(tempQuantities).forEach(([pid, qty]) => {
+        if (qty > 0) {
+          const currentOrderItems = editingVisit ? editOrderItems : orderItems;
+          const orderItem = currentOrderItems.find(i => i.product_id === pid);
+          const orderQty = orderItem ? orderItem.quantity : 0;
+          if (qty > orderQty) {
+            const prod = products.find(p => p.id === pid);
+            invalidItems.push(prod?.name || pid);
+          }
+        }
+      });
+
+      if (invalidItems.length > 0) {
+        Alert.alert('Invalid Return', `Return quantity cannot be more than ordered quantity for: ${invalidItems.join(', ')}`);
+        return;
+      }
+    }
+
     const newItems: any[] = [];
     Object.entries(tempQuantities).forEach(([pid, qty]) => {
       if (qty > 0) {
@@ -224,38 +276,71 @@ export default function StoreDetailScreen() {
       }
     });
 
-    if (modalType === 'order') {
-      setOrderItems(newItems);
+    if (editingVisit) {
+      if (modalType === 'order') {
+        setEditOrderItems(newItems);
+      } else {
+        setEditReturnItems(newItems);
+      }
     } else {
-      setReturnItems(newItems);
+      if (modalType === 'order') {
+        setOrderItems(newItems);
+      } else {
+        setReturnItems(newItems);
+      }
     }
     setIsProductModalOpen(false);
   };
 
   const handleAddItem = (product: any) => {
-    // Keep this for simple cases or just remove it if everything is bulk now
-    if (modalType === 'order') {
-      const existing = orderItems.find(i => i.product_id === product.id);
-      if (existing) {
-        setOrderItems(orderItems.map(i => i.product_id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
+    if (editingVisit) {
+      if (modalType === 'order') {
+        const existing = editOrderItems.find(i => i.product_id === product.id);
+        if (existing) {
+          setEditOrderItems(editOrderItems.map(i => i.product_id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
+        } else {
+          setEditOrderItems([...editOrderItems, { product_id: product.id, name: product.name, quantity: 1, price: product.price }]);
+        }
       } else {
-        setOrderItems([...orderItems, { product_id: product.id, name: product.name, quantity: 1, price: product.price }]);
+        const existing = editReturnItems.find(i => i.product_id === product.id);
+        if (existing) {
+          setEditReturnItems(editReturnItems.map(i => i.product_id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
+        } else {
+          setEditReturnItems([...editReturnItems, { product_id: product.id, name: product.name, quantity: 1 }]);
+        }
       }
     } else {
-      const existing = returnItems.find(i => i.product_id === product.id);
-      if (existing) {
-        setReturnItems(returnItems.map(i => i.product_id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
+      if (modalType === 'order') {
+        const existing = orderItems.find(i => i.product_id === product.id);
+        if (existing) {
+          setOrderItems(orderItems.map(i => i.product_id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
+        } else {
+          setOrderItems([...orderItems, { product_id: product.id, name: product.name, quantity: 1, price: product.price }]);
+        }
       } else {
-        setReturnItems([...returnItems, { product_id: product.id, name: product.name, quantity: 1 }]);
+        const existing = returnItems.find(i => i.product_id === product.id);
+        if (existing) {
+          setReturnItems(returnItems.map(i => i.product_id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
+        } else {
+          setReturnItems([...returnItems, { product_id: product.id, name: product.name, quantity: 1 }]);
+        }
       }
     }
   };
 
   const removeItem = (productId: string, type: 'order' | 'retur') => {
-    if (type === 'order') {
-      setOrderItems(orderItems.filter(i => i.product_id !== productId));
+    if (editingVisit) {
+      if (type === 'order') {
+        setEditOrderItems(editOrderItems.filter(i => i.product_id !== productId));
+      } else {
+        setEditReturnItems(editReturnItems.filter(i => i.product_id !== productId));
+      }
     } else {
-      setReturnItems(returnItems.filter(i => i.product_id !== productId));
+      if (type === 'order') {
+        setOrderItems(orderItems.filter(i => i.product_id !== productId));
+      } else {
+        setReturnItems(returnItems.filter(i => i.product_id !== productId));
+      }
     }
   };
 
@@ -274,7 +359,93 @@ export default function StoreDetailScreen() {
     setReturAmount(String(total));
   }, [returnItems, products]);
 
+  // Recalculate edit totals when edit items change
+  useEffect(() => {
+    if (!editingVisit) return;
+    const total = editOrderItems.reduce((sum, item) => sum + (item.quantity * item.price), 0);
+    setEditForm(prev => ({ ...prev, order: String(total) }));
+  }, [editOrderItems]);
+
+  useEffect(() => {
+    if (!editingVisit) return;
+    const total = editReturnItems.reduce((sum, item) => {
+      const prod = products.find(p => p.id === item.product_id);
+      return sum + (item.quantity * (prod?.price || 0));
+    }, 0);
+    setEditForm(prev => ({ ...prev, retur: String(total) }));
+  }, [editReturnItems, products]);
+
   const formatCurrency = (amount: number) => 'Rp ' + (amount || 0).toLocaleString('id-ID');
+
+  const getLeafletHTML = () => {
+    if (!store) return '';
+    const userLat = userLocation?.coords.latitude;
+    const userLon = userLocation?.coords.longitude;
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+          body { margin: 0; padding: 0; }
+          #map { height: 100vh; width: 100vw; }
+          .user-location-dot {
+            width: 12px;
+            height: 12px;
+            background-color: #007bff;
+            border: 2px solid white;
+            border-radius: 50%;
+            box-shadow: 0 0 5px rgba(0,0,0,0.3);
+          }
+        </style>
+      </head>
+      <body>
+        <div id="map"></div>
+        <script>
+          const map = L.map('map', { zoomControl: false }).setView([${store.lat}, ${store.lon}], 17);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+          }).addTo(map);
+          
+          const storeIcon = L.icon({
+            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+            shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41]
+          });
+
+          L.marker([${store.lat}, ${store.lon}], { icon: storeIcon }).addTo(map)
+            .bindPopup('<b>${store.name}</b>')
+            .openPopup();
+
+          L.circle([${store.lat}, ${store.lon}], {
+            color: '#0066cc',
+            fillColor: '#0066cc',
+            fillOpacity: 0.15,
+            radius: ${CHECKIN_RADIUS}
+          }).addTo(map);
+
+          if (${!!userLat && !!userLon}) {
+            const userIcon = L.divIcon({
+              className: 'user-location-dot',
+              iconSize: [12, 12],
+              iconAnchor: [6, 6]
+            });
+            L.marker([${userLat || 0}, ${userLon || 0}], { icon: userIcon }).addTo(map)
+              .bindPopup('You are here');
+            
+            // Adjust view to show both if distance is reasonable
+            const bounds = L.latLngBounds([[${store.lat}, ${store.lon}], [${userLat || 0}, ${userLon || 0}]]);
+            map.fitBounds(bounds, { padding: [30, 30] });
+          }
+        </script>
+      </body>
+      </html>
+    `;
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -308,8 +479,8 @@ export default function StoreDetailScreen() {
         {/* Store Photo */}
         {store.photo_url && (
           <View style={styles.photoContainer}>
-            <Image 
-              source={{ uri: `${API_BASE_URL}${store.photo_url}` }} 
+            <Image
+              source={{ uri: `${SERVER_URL}${store.photo_url}` }}
               style={styles.storeImage}
               resizeMode="cover"
             />
@@ -356,7 +527,7 @@ export default function StoreDetailScreen() {
               const timeStr = date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
               const dueDate = v.dueDate ? new Date(v.dueDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '-';
               const isOverdue = v.dueDate && new Date(v.dueDate) < new Date();
-              
+
               return (
                 <View key={v.id || idx} style={styles.historyCard}>
                   <View style={styles.historyRow}>
@@ -365,7 +536,7 @@ export default function StoreDetailScreen() {
                       <Text style={{ color: '#0066cc', fontWeight: 'bold' }}>Edit</Text>
                     </TouchableOpacity>
                   </View>
-                  
+
                   <View style={styles.historyRow}>
                     <Text style={styles.historyTime}>{timeStr}</Text>
                     <View style={[styles.paymentBadge, { backgroundColor: getStatusColor(v.paymentStatus) }]}>
@@ -391,6 +562,17 @@ export default function StoreDetailScreen() {
                       {formatCurrency(netSales)}
                     </Text>
                   </View>
+
+                  {v.attachment_url && (
+                    <View style={{ marginTop: 10, borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 8 }}>
+                      <Text style={[styles.historyLabel, { marginBottom: 4 }]}>📷 Attachment</Text>
+                      <Image 
+                        source={{ uri: `${SERVER_URL}${v.attachment_url}` }} 
+                        style={{ width: '100%', height: 150, borderRadius: 8, backgroundColor: '#f7fafc' }}
+                        resizeMode="cover"
+                      />
+                    </View>
+                  )}
                 </View>
               );
             })}
@@ -406,12 +588,12 @@ export default function StoreDetailScreen() {
           <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>Edit Transaction</Text>
-              
+
               <ScrollView style={{ maxHeight: 400 }}>
                 <View style={styles.inputContainer}>
                   <Text style={styles.label}>Order Items</Text>
                   <View style={styles.itemList}>
-                    {orderItems.map(item => (
+                    {editOrderItems.map(item => (
                       <View key={item.product_id} style={styles.itemRow}>
                         <Text style={styles.itemName}>{item.name} (x{item.quantity})</Text>
                         <TouchableOpacity onPress={() => removeItem(item.product_id, 'order')}>
@@ -419,20 +601,20 @@ export default function StoreDetailScreen() {
                         </TouchableOpacity>
                       </View>
                     ))}
-                    <TouchableOpacity 
-                      style={styles.addItemBtn} 
-                      onPress={() => { setModalType('order'); setIsProductModalOpen(true); }}
+                    <TouchableOpacity
+                      style={styles.addItemBtn}
+                      onPress={() => handleOpenProductModal('order')}
                     >
                       <Text style={styles.addItemBtnText}>+ ADD PRODUCT</Text>
                     </TouchableOpacity>
                   </View>
-                  <Text style={styles.totalText}>Total Order: {formatCurrency(Number(orderAmount))}</Text>
+                  <Text style={styles.totalText}>Total Order: {formatCurrency(Number(editForm.order))}</Text>
                 </View>
 
                 <View style={styles.inputContainer}>
                   <Text style={styles.label}>Return Items</Text>
                   <View style={styles.itemList}>
-                    {returnItems.map(item => (
+                    {editReturnItems.map(item => (
                       <View key={item.product_id} style={styles.itemRow}>
                         <Text style={styles.itemName}>{item.name} (x{item.quantity})</Text>
                         <TouchableOpacity onPress={() => removeItem(item.product_id, 'retur')}>
@@ -440,14 +622,14 @@ export default function StoreDetailScreen() {
                         </TouchableOpacity>
                       </View>
                     ))}
-                    <TouchableOpacity 
-                      style={styles.addItemBtn} 
-                      onPress={() => { setModalType('retur'); setIsProductModalOpen(true); }}
+                    <TouchableOpacity
+                      style={styles.addItemBtn}
+                      onPress={() => handleOpenProductModal('retur')}
                     >
                       <Text style={styles.addItemBtnText}>+ ADD RETURN ITEM</Text>
                     </TouchableOpacity>
                   </View>
-                  <Text style={styles.totalText}>Total Return: {formatCurrency(Number(returAmount))}</Text>
+                  <Text style={styles.totalText}>Total Return: {formatCurrency(Number(editForm.retur))}</Text>
                 </View>
 
                 <View style={styles.inputContainer}>
@@ -462,14 +644,14 @@ export default function StoreDetailScreen() {
               </ScrollView>
 
               <View style={styles.modalActions}>
-                <TouchableOpacity 
-                  style={[styles.modalBtn, { backgroundColor: '#e2e8f0' }]} 
+                <TouchableOpacity
+                  style={[styles.modalBtn, { backgroundColor: '#e2e8f0' }]}
                   onPress={handleCloseEdit}
                 >
                   <Text style={[styles.modalBtnText, { color: '#4a5568' }]}>Cancel</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.modalBtn, { backgroundColor: '#0066cc' }]} 
+                <TouchableOpacity
+                  style={[styles.modalBtn, { backgroundColor: '#0066cc' }]}
                   onPress={handleSaveEdit}
                 >
                   <Text style={styles.modalBtnText}>Save</Text>
@@ -490,34 +672,25 @@ export default function StoreDetailScreen() {
             ) : null}
 
             <View style={styles.mapContainer}>
-              {Platform.OS === 'web' ? (
-                <iframe
-                  width="100%"
-                  height="100%"
-                  src={`https://www.openstreetmap.org/export/embed.html?bbox=${store.lon - 0.001},${store.lat - 0.001},${store.lon + 0.001},${store.lat + 0.001}&layer=mapnik&marker=${store.lat},${store.lon}`}
-                  style={{ border: 0, borderRadius: 12 }}
-                />
-              ) : (
-                <MapView
-                  style={{ flex: 1 }}
-                  showsUserLocation={true}
-                  showsMyLocationButton={true}
-                  initialRegion={{
-                    latitude: store.lat,
-                    longitude: store.lon,
-                    latitudeDelta: 0.002,
-                    longitudeDelta: 0.002,
-                  }}
-                >
-                  <Marker coordinate={{ latitude: store.lat, longitude: store.lon }} title={store.name} />
-                  <Circle
-                    center={{ latitude: store.lat, longitude: store.lon }}
-                    radius={CHECKIN_RADIUS}
-                    fillColor="rgba(0, 102, 204, 0.3)"
-                    strokeColor="rgba(0, 102, 204, 0.8)"
-                  />
-                </MapView>
-              )}
+              <WebView
+                originWhitelist={['*']}
+                source={{ html: getLeafletHTML() }}
+                style={{ flex: 1, borderRadius: 12 }}
+                scrollEnabled={false}
+              />
+              <TouchableOpacity
+                style={styles.mapsLinkOverlay}
+                onPress={() => {
+                  const url = Platform.select({
+                    ios: `maps:0,0?q=${store.name}@${store.lat},${store.lon}`,
+                    android: `geo:0,0?q=${store.lat},${store.lon}(${store.name})`,
+                    web: `https://www.google.com/maps/search/?api=1&query=${store.lat},${store.lon}`
+                  });
+                  if (url) Linking.openURL(url);
+                }}
+              >
+                <Text style={styles.mapsLinkOverlayText}>Open in Google Maps ↗</Text>
+              </TouchableOpacity>
             </View>
 
             <TouchableOpacity
@@ -558,8 +731,8 @@ export default function StoreDetailScreen() {
                     </TouchableOpacity>
                   </View>
                 ))}
-                <TouchableOpacity 
-                  style={styles.addItemBtn} 
+                <TouchableOpacity
+                  style={styles.addItemBtn}
                   onPress={() => handleOpenProductModal('order')}
                 >
                   <Text style={styles.addItemBtnText}>+ MANAGE ORDER ITEMS</Text>
@@ -579,8 +752,8 @@ export default function StoreDetailScreen() {
                     </TouchableOpacity>
                   </View>
                 ))}
-                <TouchableOpacity 
-                  style={styles.addItemBtn} 
+                <TouchableOpacity
+                  style={styles.addItemBtn}
                   onPress={() => handleOpenProductModal('retur')}
                 >
                   <Text style={styles.addItemBtnText}>+ MANAGE RETURN ITEMS</Text>
@@ -589,31 +762,28 @@ export default function StoreDetailScreen() {
               <Text style={styles.totalText}>Total Return: {formatCurrency(Number(returAmount))}</Text>
             </View>
 
-            <View style={styles.inputContainer}>
-              <Text style={styles.label}>Tagihan / Collection (Rp)</Text>
+            <View style={styles.checkoutForm}>
+              <Text style={styles.formTitle}>Visit Checkout</Text>
+              
+              <View style={styles.summaryBox}>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Order Total:</Text>
+                  <Text style={styles.summaryValue}>Rp {orderItems.reduce((sum, i) => sum + (i.quantity * i.price), 0).toLocaleString()}</Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Return Total:</Text>
+                  <Text style={[styles.summaryValue, { color: '#e74c3c' }]}>Rp {returnItems.reduce((sum, i) => sum + (i.quantity * (products.find(p => p.id === i.product_id)?.price || 0)), 0).toLocaleString()}</Text>
+                </View>
+              </View>
+
+              <Text style={styles.inputLabel}>Tagihan Amount (Rp)</Text>
               <TextInput
                 style={styles.input}
-                placeholder="0"
-                placeholderTextColor="#999"
+                placeholder="Amount collected..."
                 value={tagihanAmount}
                 onChangeText={setTagihanAmount}
                 keyboardType="numeric"
               />
-            </View>
-
-            <View style={styles.inputContainer}>
-              <Text style={styles.label}>Document/Receipt Photo</Text>
-              <TouchableOpacity style={styles.attachmentBtn} onPress={pickImage}>
-                <Text style={styles.attachmentBtnText}>
-                  {attachment ? '📸 Photo Captured' : '📷 Take Photo of Receipt'}
-                </Text>
-              </TouchableOpacity>
-              {attachment && (
-                <View style={styles.previewContainer}>
-                  <Image source={{ uri: attachment }} style={styles.previewImage} />
-                  <TouchableOpacity onPress={() => setAttachment(null)} style={styles.removeBtn}>
-                    <Text style={styles.removeText}>Remove</Text>
-                  </TouchableOpacity>
                 </View>
               )}
             </View>
@@ -645,17 +815,17 @@ export default function StoreDetailScreen() {
                       <Text style={styles.productPrice}>{formatCurrency(p.price)}</Text>
                       <Text style={styles.productStock}>Avail: {p.quantity}</Text>
                     </View>
-                    
+
                     <View style={styles.qtySelector}>
-                      <TouchableOpacity 
-                        style={styles.qtyBtn} 
+                      <TouchableOpacity
+                        style={styles.qtyBtn}
                         onPress={() => updateTempQuantity(p.id, -1)}
                       >
                         <Text style={styles.qtyBtnText}>-</Text>
                       </TouchableOpacity>
                       <Text style={styles.qtyValue}>{qty}</Text>
-                      <TouchableOpacity 
-                        style={styles.qtyBtn} 
+                      <TouchableOpacity
+                        style={styles.qtyBtn}
                         onPress={() => updateTempQuantity(p.id, 1)}
                       >
                         <Text style={styles.qtyBtnText}>+</Text>
@@ -665,16 +835,16 @@ export default function StoreDetailScreen() {
                 );
               })}
             </ScrollView>
-            
+
             <View style={styles.modalActions}>
-              <TouchableOpacity 
-                style={[styles.modalBtn, { backgroundColor: '#e2e8f0', flex: 1 }]} 
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: '#e2e8f0', flex: 1 }]}
                 onPress={() => setIsProductModalOpen(false)}
               >
                 <Text style={[styles.modalBtnText, { color: '#4a5568', textAlign: 'center' }]}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalBtn, { backgroundColor: '#0066cc', flex: 2 }]} 
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: '#0066cc', flex: 2 }]}
                 onPress={handleApplyBulkSelection}
               >
                 <Text style={[styles.modalBtnText, { textAlign: 'center' }]}>Update Selection</Text>
@@ -1103,5 +1273,21 @@ const styles = StyleSheet.create({
   modalBtnText: {
     color: '#fff',
     fontWeight: 'bold',
+  },
+  mapsLinkOverlay: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  mapsLinkOverlayText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#0066cc',
   },
 });

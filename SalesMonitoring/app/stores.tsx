@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, TextInput, FlatList, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TextInput, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { getStores } from '../utils/storage';
@@ -10,20 +10,26 @@ export default function StoresScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const [search, setSearch] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const [stores, setStores] = useState<any[]>([]);
   const [filteredStores, setFilteredStores] = useState<any[]>([]);
 
   useFocusEffect(
     useCallback(() => {
       const fetchStores = async () => {
-        const data = await getStores();
-        const myStores = data.filter((s: any) => s.salesmanId === user?.nik);
-        setStores(myStores);
-        setFilteredStores(myStores);
-        setSearch('');
+        setIsLoading(true);
+        try {
+          const data = await getStores();
+          const myStores = data.filter((s: any) => s.salesmanId === user?.nik);
+          setStores(myStores);
+          setFilteredStores(myStores);
+          setSearch('');
+        } finally {
+          setIsLoading(false);
+        }
       };
       fetchStores();
-    }, [])
+    }, [user])
   );
 
   const handleSearch = (text: string) => {
@@ -35,7 +41,7 @@ export default function StoresScreen() {
     }
   };
 
-  const formatCurrency = (amount: number) => 'Rp ' + amount.toLocaleString('id-ID');
+  const formatCurrency = (amount: number) => 'Rp ' + (amount || 0).toLocaleString('id-ID');
 
   const renderItem = ({ item }: { item: any }) => (
     <TouchableOpacity 
@@ -72,13 +78,20 @@ export default function StoresScreen() {
         />
       </View>
 
-      <FlatList 
-        data={filteredStores}
-        keyExtractor={item => item.id}
-        renderItem={renderItem}
-        contentContainerStyle={styles.listContent}
-        ListEmptyComponent={<Text style={styles.emptyText}>No stores found. Tap + to register one.</Text>}
-      />
+      {isLoading ? (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#0066cc" />
+          <Text style={{ marginTop: 10, color: '#718096' }}>Loading stores...</Text>
+        </View>
+      ) : (
+        <FlatList 
+          data={filteredStores}
+          keyExtractor={item => item.id}
+          renderItem={renderItem}
+          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={<Text style={styles.emptyText}>No stores found. Tap + to register one.</Text>}
+        />
+      )}
 
       <TouchableOpacity
         style={styles.fab}

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import { useAuth } from '../context/AuthContext';
@@ -9,6 +9,7 @@ import { StatusBar } from 'expo-status-bar';
 export default function LoginScreen() {
   const [nik, setNik] = useState('');
   const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const router = useRouter();
   const { login } = useAuth();
@@ -20,19 +21,27 @@ export default function LoginScreen() {
       return;
     }
 
-    const user = await loginUser(nik, password);
-    if (user) {
-      // Request location permissions before entering the app
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setErrorMsg('Location permission is required to use this app.');
-        return;
-      }
+    setIsLoading(true);
+    try {
+      const user = await loginUser(nik, password);
+      if (user) {
+        // Request location permissions before entering the app
+        let { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          setErrorMsg('Location permission is required to use this app.');
+          setIsLoading(false);
+          return;
+        }
 
-      login(user);
-      router.replace('/dashboard');
-    } else {
-      setErrorMsg('Invalid NIK or Password. Use 12345 / password.');
+        login(user);
+        router.replace('/dashboard');
+      } else {
+        setErrorMsg('Invalid NIK or Password. Use 12345 / password.');
+        setIsLoading(false);
+      }
+    } catch (e) {
+      setErrorMsg('Network error. Please check your connection.');
+      setIsLoading(false);
     }
   };
 
@@ -81,8 +90,16 @@ export default function LoginScreen() {
           />
         </View>
 
-        <TouchableOpacity style={styles.loginBtn} onPress={handleLogin}>
-          <Text style={styles.loginBtnText}>SIGN IN</Text>
+        <TouchableOpacity 
+          style={[styles.loginBtn, isLoading && { opacity: 0.7 }]} 
+          onPress={handleLogin}
+          disabled={isLoading}
+        >
+          {isLoading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.loginBtnText}>SIGN IN</Text>
+          )}
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>

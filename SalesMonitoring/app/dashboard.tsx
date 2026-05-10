@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
 import { getVisits } from '../utils/storage';
@@ -12,47 +12,53 @@ export default function DashboardScreen() {
   const [salesToday, setSalesToday] = useState(0);
   const [returMTD, setReturMTD] = useState(0);
   const [budgetReturMTD, setBudgetReturMTD] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       const fetchStats = async () => {
-        const visits = await getVisits();
-        const myVisits = visits.filter((v: any) => v.salesmanId === user?.nik);
+        setIsLoading(true);
+        try {
+          const visits = await getVisits();
+          const myVisits = visits.filter((v: any) => v.salesmanId === user?.nik);
 
-        let mtdNetSales = 0;
-        let todaySales = 0;
-        let mtdRetur = 0;
+          let mtdNetSales = 0;
+          let todaySales = 0;
+          let mtdRetur = 0;
 
-        const now = new Date();
-        const currentMonth = now.getMonth();
-        const currentYear = now.getFullYear();
-        const todayStr = now.toDateString();
+          const now = new Date();
+          const currentMonth = now.getMonth();
+          const currentYear = now.getFullYear();
+          const todayStr = now.toDateString();
 
-        myVisits.forEach((v: any) => {
-          const order = v.orderAmount || v.salesAmount || 0;
-          const retur = v.returAmount || 0;
-          const net = order - retur;
+          myVisits.forEach((v: any) => {
+            const order = v.orderAmount || v.salesAmount || 0;
+            const retur = v.returAmount || 0;
+            const net = order - retur;
 
-          const visitDate = new Date(v.checkInTime);
-          const isThisMonth = visitDate.getMonth() === currentMonth && visitDate.getFullYear() === currentYear;
-          const isToday = visitDate.toDateString() === todayStr;
+            const visitDate = new Date(v.checkInTime);
+            const isThisMonth = visitDate.getMonth() === currentMonth && visitDate.getFullYear() === currentYear;
+            const isToday = visitDate.toDateString() === todayStr;
 
-          // MTD only counts validated visits
-          if (isThisMonth && v.status === 'validated') {
-            mtdNetSales += net;
-            mtdRetur += retur;
-          }
+            // MTD only counts validated visits
+            if (isThisMonth && v.status === 'validated') {
+              mtdNetSales += net;
+              mtdRetur += retur;
+            }
 
-          // Today counts everything (even pending) to show daily progress
-          if (isToday) {
-            todaySales += net;
-          }
-        });
+            // Today counts everything (even pending) to show daily progress
+            if (isToday) {
+              todaySales += net;
+            }
+          });
 
-        setSalesNetMTD(mtdNetSales);
-        setSalesToday(todaySales);
-        setReturMTD(mtdRetur);
-        setBudgetReturMTD(mtdNetSales * 0.01);
+          setSalesNetMTD(mtdNetSales);
+          setSalesToday(todaySales);
+          setReturMTD(mtdRetur);
+          setBudgetReturMTD(mtdNetSales * 0.01);
+        } finally {
+          setIsLoading(false);
+        }
       };
 
       fetchStats();
@@ -65,7 +71,7 @@ export default function DashboardScreen() {
   };
 
   const formatCurrency = (amount: number) => {
-    return 'Rp ' + amount.toLocaleString('id-ID');
+    return 'Rp ' + (amount || 0).toLocaleString('id-ID');
   };
 
   return (
@@ -81,39 +87,46 @@ export default function DashboardScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Sales Net MTD</Text>
-          <Text style={styles.cardAmount}>{formatCurrency(salesNetMTD)}</Text>
-          <Text style={styles.cardSubtext}>Month-To-Date (Validated Only)</Text>
+      {isLoading ? (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#0066cc" />
+          <Text style={{ marginTop: 10, color: '#718096' }}>Calculating performance...</Text>
         </View>
-
-        <View style={[styles.card, { backgroundColor: '#4a5568', shadowColor: '#4a5568' }]}>
-          <Text style={styles.cardTitle}>Sales Net Today</Text>
-          <Text style={styles.cardAmount}>{formatCurrency(salesToday)}</Text>
-          <Text style={styles.cardSubtext}>Daily Performance (Includes Pending)</Text>
-        </View>
-
-        <View style={styles.gridContainer}>
-          <View style={[styles.miniCard, { backgroundColor: '#3182ce' }]}>
-            <Text style={styles.miniCardTitle}>Budget Retur MTD</Text>
-            <Text style={styles.miniCardAmount}>{formatCurrency(budgetReturMTD)}</Text>
-            <Text style={styles.miniCardSubtext}>1% of Sales MTD</Text>
+      ) : (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Sales Net MTD</Text>
+            <Text style={styles.cardAmount}>{formatCurrency(salesNetMTD)}</Text>
+            <Text style={styles.cardSubtext}>Month-To-Date (Validated Only)</Text>
           </View>
-          <View style={[styles.miniCard, { backgroundColor: returMTD > budgetReturMTD ? '#e53e3e' : '#38a169' }]}>
-            <Text style={styles.miniCardTitle}>Retur MTD</Text>
-            <Text style={styles.miniCardAmount}>{formatCurrency(returMTD)}</Text>
-            <Text style={styles.miniCardSubtext}>{returMTD > budgetReturMTD ? 'Over Budget ⚠️' : 'Within Budget ✓'}</Text>
-          </View>
-        </View>
 
-        <TouchableOpacity
-          style={styles.activityBtn}
-          onPress={() => router.push('/stores')}
-        >
-          <Text style={styles.activityBtnText}>Start Activity</Text>
-        </TouchableOpacity>
-      </ScrollView>
+          <View style={[styles.card, { backgroundColor: '#4a5568', shadowColor: '#4a5568' }]}>
+            <Text style={styles.cardTitle}>Sales Net Today</Text>
+            <Text style={styles.cardAmount}>{formatCurrency(salesToday)}</Text>
+            <Text style={styles.cardSubtext}>Daily Performance (Includes Pending)</Text>
+          </View>
+
+          <View style={styles.gridContainer}>
+            <View style={[styles.miniCard, { backgroundColor: '#3182ce' }]}>
+              <Text style={styles.miniCardTitle}>Budget Retur MTD</Text>
+              <Text style={styles.miniCardAmount}>{formatCurrency(budgetReturMTD)}</Text>
+              <Text style={styles.miniCardSubtext}>1% of Sales MTD</Text>
+            </View>
+            <View style={[styles.miniCard, { backgroundColor: returMTD > budgetReturMTD ? '#e53e3e' : '#38a169' }]}>
+              <Text style={styles.miniCardTitle}>Retur MTD</Text>
+              <Text style={styles.miniCardAmount}>{formatCurrency(returMTD)}</Text>
+              <Text style={styles.miniCardSubtext}>{returMTD > budgetReturMTD ? 'Over Budget ⚠️' : 'Within Budget ✓'}</Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={styles.activityBtn}
+            onPress={() => router.push('/stores')}
+          >
+            <Text style={styles.activityBtnText}>Start Activity</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      )}
     </View>
   );
 }
